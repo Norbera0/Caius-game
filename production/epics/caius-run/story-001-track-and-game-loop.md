@@ -1,12 +1,12 @@
 # Story 001: Pseudo-3D track and game loop
 
 > **Epic**: Caius Run
-> **Status**: Ready
+> **Status**: In Progress
 > **Layer**: Foundation
 > **Type**: Visual/Feel
 > **Estimate**: M
 > **Manifest Version**: N/A (minimal — no control manifest)
-> **Last Updated**: [set by /dev-story when implementation begins]
+> **Last Updated**: 2026-10-02
 
 ## Context
 

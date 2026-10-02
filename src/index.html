@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#8fd3f4">
+<title>Caius Run</title>
+<style>
+  /* Fill the screen, never scroll/zoom/pull-to-refresh while playing. */
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: #6fcf4f;
+    overscroll-behavior: none;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas {
+    display: block;
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+    touch-action: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+
+/* ==========================================================================
+   CAIUS RUN — single file, vanilla JS + canvas.
+   Sections: 1 config · 2 state · 3 projection · 4 rendering · 5 input ·
+             6 spawning · 7 collision · 8 screens · 9 game loop · 10 boot
+   Depth unit "z": world distance ahead of the camera plane (z = 0 is the
+   bottom edge of the screen). Screen scale s = 1 / (1 + K * z).
+   ========================================================================== */
+
+
+/* ==========================================================================
+   1. CONFIG — every tunable lives here (gameplay values are data-driven)
+   ========================================================================== */
+const CONFIG = {
+  lanes: 3,                 // lane count (story 001 draws exactly 3)
+  startLane: 1,             // 0-based; 1 = middle
+  horizonRatio: 0.34,       // horizon height as a fraction of screen height
+  perspectiveK: 1.0,        // K in s = 1 / (1 + K z); higher = stronger convergence
+  roadHalfWidthRatio: 0.46, // road half width at z = 0, fraction of screen width...
+  roadHalfWidthMaxRatio: 0.36, // ...capped to this fraction of screen height (landscape)
+  viewDepth: 60,            // farthest z drawn
+  dogZ: 0.32,               // dog depth; ~0.84 of screen height with defaults
+  dogSizeRatio: 0.72,       // dog height as a fraction of a lane width at its depth
+  baseSpeed: 9,             // forward speed, z units per second
+  maxDt: 0.05,              // delta-time clamp (seconds)
+  dashPeriod: 2.4,          // z distance between lane-marking dashes
+  dashLength: 1.1,          // z length of one dash
+  grassBandPeriod: 3.0,     // z length of one grass stripe
+  dprMax: 3,                // cap on devicePixelRatio for fill-rate
+  colors: {
+    skyTop: "#7cc8f2",
+    skyBottom: "#fff0c4",
+    grassA: "#7ed957",
+    grassB: "#72cf4c",
+    road: "#f4cb8e",
+    roadEdge: "#dd9f5e",
+    marking: "#fff9ea",
+    dogBody: "#c8621f",
+    dogFeather: "#e68f3f",
+    dogOutline: "#7a3410",
+    dogPad: "#5a2a12",
+  },
+};
+
+
+/* ==========================================================================
+   2. STATE
+   ========================================================================== */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+/** Layout recomputed on every resize; all drawing reads from here. */
+const view = { w: 0, h: 0, dpr: 1, vx: 0, horizonY: 0, laneW: 0 };
+
+/** Run state. `speed` is the single variable that drives all scrolling. */
+const state = {
+  speed: CONFIG.baseSpeed,
+  scroll: 0,      // total z distance travelled, wraps visually via modulo
+  runPhase: 0,    // drives the placeholder dog's stride
+  lane: CONFIG.startLane,
+};
+
+
+/* ==========================================================================
+   3. PROJECTION — one pure mapping shared by rendering and collision
+   ========================================================================== */
+
+/** Screen scale at depth z: 1 at the camera plane, → 0 at the horizon. */
+function scaleAt(z) {
+  return 1 / (1 + CONFIG.perspectiveK * z);
+}
+
+/**
+ * Map a lane position and depth to screen space.
+ * @param {number} laneX  lane-space x: lane index minus centre (-1, 0, 1), or ±1.5 for road edges
+ * @param {number} z      depth ahead of the camera plane (>= 0)
+ * @returns {{x:number, y:number, s:number}} screen x, ground y, scale
+ */
+function project(laneX, z) {
+  const s = scaleAt(z);
+  return {
+    x: view.vx + laneX * view.laneW * s,
+    y: view.horizonY + (view.h - view.horizonY) * s,
+    s,
+  };
+}
+
+/** Lane index (0..lanes-1) to lane-space x. */
+function laneToX(lane) {
+  return lane - (CONFIG.lanes - 1) / 2;
+}
+
+
+/* ==========================================================================
+   4. RENDERING
+   ========================================================================== */
+
+/** Resize the canvas to the viewport (DPR-aware) and recompute the layout. */
+function resize() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const dpr = Math.min(window.devicePixelRatio || 1, CONFIG.dprMax);
+  canvas.width = Math.round(w * dpr);
+  canvas.height = Math.round(h * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  view.w = w;
+  view.h = h;
+  view.dpr = dpr;
+  view.vx = w / 2;
+  view.horizonY = h * CONFIG.horizonRatio;
+  const roadHalf = Math.min(w * CONFIG.roadHalfWidthRatio, h * CONFIG.roadHalfWidthMaxRatio);
+  view.laneW = (roadHalf * 2) / CONFIG.lanes;
+}
+
+/** Fill a quad given as [x,y] pairs. */
+function fillQuad(a, b, c, d, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(a[0], a[1]);
+  ctx.lineTo(b[0], b[1]);
+  ctx.lineTo(c[0], c[1]);
+  ctx.lineTo(d[0], d[1]);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/** Quad on the ground between lane-space x0..x1 and depth z0..z1. */
+function groundQuad(x0, x1, z0, z1, color) {
+  const a = project(x0, z0), b = project(x1, z0);
+  const c = project(x1, z1), d = project(x0, z1);
+  fillQuad([a.x, a.y], [b.x, b.y], [c.x, c.y], [d.x, d.y], color);
+}
+
+/** Sky, then flat grass below the horizon. */
+function drawBackdrop() {
+  const C = CONFIG.colors;
+  const g = ctx.createLinearGradient(0, 0, 0, view.horizonY);
+  g.addColorStop(0, C.skyTop);
+  g.addColorStop(1, C.skyBottom);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, view.w, view.horizonY + 1);
+  ctx.fillStyle = C.grassA;
+  ctx.fillRect(0, view.horizonY, view.w, view.h - view.horizonY);
+}
+
+/** Alternating grass stripes that scroll toward the camera. */
+function drawGrassBands() {
+  const P = CONFIG.grassBandPeriod;
+  const offset = state.scroll % P;
+  const first = Math.floor(state.scroll / P);
+  const count = Math.ceil(CONFIG.viewDepth / P) + 1;
+  for (let k = count; k >= 0; k--) {
+    const z0 = Math.max(k * P - offset, 0);
+    const z1 = k * P - offset + P;
+    if (z1 <= 0) continue;
+    if ((first + k) % 2 !== 0) continue;
+    const a = project(0, z0), b = project(0, z1);
+    ctx.fillStyle = CONFIG.colors.grassB;
+    ctx.fillRect(0, b.y, view.w, a.y - b.y + 1);
+  }
+}
+
+/** The path: edges, surface, and scrolling dashed lane dividers. */
+function drawRoad() {
+  const C = CONFIG.colors;
+  const half = CONFIG.lanes / 2;
+  const z0 = 0, z1 = CONFIG.viewDepth;
+  groundQuad(-half - 0.09, half + 0.09, z0, z1, C.roadEdge);
+  groundQuad(-half, half, z0, z1, C.road);
+
+  const P = CONFIG.dashPeriod;
+  const offset = state.scroll % P;
+  const count = Math.ceil(CONFIG.viewDepth / P) + 1;
+  for (let lane = 1; lane < CONFIG.lanes; lane++) {
+    const x = lane - half;
+    for (let k = count; k >= 0; k--) {
+      const d0 = k * P - offset;
+      const d1 = d0 + CONFIG.dashLength;
+      if (d1 <= 0 || d0 >= CONFIG.viewDepth) continue;
+      groundQuad(x - 0.03, x + 0.03, Math.max(d0, 0), d1, C.marking);
+    }
+  }
+}
+
+/** Placeholder Caius (rear view): simple shapes, real art lands in story 006. */
+function drawDog(lane, z) {
+  const C = CONFIG.colors;
+  const p = project(laneToX(lane), z);
+  const B = view.laneW * p.s * CONFIG.dogSizeRatio * 1.6; // body unit
+  const ph = state.runPhase;
+  const bob = Math.sin(ph * 2) * B * 0.025;
+  const lift = (k) => Math.max(0, Math.sin(ph + k * Math.PI)) * B * 0.09;
+  const lw = Math.max(1.5, B * 0.022);
+  const x = p.x, y = p.y;
+
+  ctx.lineWidth = lw;
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = C.dogOutline;
+
+  // ground shadow
+  ctx.fillStyle = "rgba(60,40,10,0.18)";
+  ctx.beginPath();
+  ctx.ellipse(x, y, B * 0.30, B * 0.07, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // rear legs (alternate)
+  for (const k of [0, 1]) {
+    const lx = x + (k ? 1 : -1) * B * 0.12;
+    const ly = y - lift(k);
+    ctx.fillStyle = C.dogBody;
+    ctx.beginPath();
+    ctx.roundRect(lx - B * 0.065, ly - B * 0.30, B * 0.13, B * 0.30, B * 0.06);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = C.dogPad;
+    ctx.beginPath();
+    ctx.ellipse(lx, ly - B * 0.01, B * 0.055, B * 0.03, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // tail, wagging
+  const wag = Math.sin(ph * 1.4) * 0.45;
+  ctx.save();
+  ctx.translate(x, y - B * 0.52 + bob);
+  ctx.rotate(wag);
+  ctx.fillStyle = C.dogFeather;
+  ctx.beginPath();
+  ctx.ellipse(0, -B * 0.16, B * 0.075, B * 0.20, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+
+  // body
+  ctx.fillStyle = C.dogBody;
+  ctx.beginPath();
+  ctx.ellipse(x, y - B * 0.42 + bob, B * 0.29, B * 0.25, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = C.dogFeather;
+  ctx.beginPath();
+  ctx.ellipse(x, y - B * 0.36 + bob, B * 0.15, B * 0.12, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // head + floppy ears
+  const hy = y - B * 0.74 + bob;
+  const flop = Math.sin(ph * 2 + 1) * 0.12;
+  for (const side of [-1, 1]) {
+    ctx.save();
+    ctx.translate(x + side * B * 0.15, hy - B * 0.04);
+    ctx.rotate(side * (0.35 + flop));
+    ctx.fillStyle = C.dogFeather;
+    ctx.beginPath();
+    ctx.ellipse(0, B * 0.07, B * 0.07, B * 0.13, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+  ctx.fillStyle = C.dogBody;
+  ctx.beginPath();
+  ctx.arc(x, hy, B * 0.17, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+}
+
+/** Draw one full frame. */
+function render() {
+  drawBackdrop();
+  drawGrassBands();
+  drawRoad();
+  drawDog(state.lane, CONFIG.dogZ);
+}
+
+
+/* ==========================================================================
+   5. INPUT — story 002 (swipe / tap / keys)
+   ========================================================================== */
+function initInput() { /* story 002 */ }
+
+
+/* ==========================================================================
+   6. SPAWNING — story 003 (obstacles) and story 005 (treats)
+   ========================================================================== */
+function updateSpawning(dt) { /* stories 003, 005 */ }
+
+
+/* ==========================================================================
+   7. COLLISION — story 003
+   ========================================================================== */
+function updateCollision() { /* story 003 */ }
+
+
+/* ==========================================================================
+   8. SCREENS — story 004 (title, play HUD, game over)
+   ========================================================================== */
+function drawScreens() { /* story 004 */ }
+
+
+/* ==========================================================================
+   9. GAME LOOP — requestAnimationFrame with clamped dt
+   ========================================================================== */
+let lastTime = null;
+
+/** Advance the simulation by dt seconds. */
+function update(dt) {
+  state.scroll += state.speed * dt;
+  state.runPhase += state.speed * dt * 1.6;
+  updateSpawning(dt);
+  updateCollision();
+}
+
+function frame(now) {
+  // First frame after start or a hidden tab: dt = 0, so no time jump.
+  const dt = lastTime === null ? 0 : Math.min((now - lastTime) / 1000, CONFIG.maxDt);
+  lastTime = now;
+  update(dt);
+  render();
+  drawScreens();
+  requestAnimationFrame(frame);
+}
+
+document.addEventListener("visibilitychange", () => { lastTime = null; });
+
+
+/* ==========================================================================
+   10. BOOT
+   ========================================================================== */
+// Debug: ?speed=N overrides the forward speed (verifies the single speed variable).
+const speedParam = parseFloat(new URLSearchParams(location.search).get("speed"));
+if (Number.isFinite(speedParam)) state.speed = speedParam;
+window.CaiusRun = { CONFIG, state, view, project };
+
+window.addEventListener("resize", resize);
+window.addEventListener("orientationchange", resize);
+resize();
+initInput();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
