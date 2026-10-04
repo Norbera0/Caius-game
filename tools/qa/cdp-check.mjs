@@ -9,7 +9,8 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const PORT = 9333;
+// Random port: a Chrome from a previous run may still be releasing the last one.
+const PORT = 9300 + Math.floor(Math.random() * 600);
 const SUITES = process.argv.slice(2);
 const want = (name) => SUITES.length === 0 || SUITES.includes(name);
 let EVID = "";
@@ -27,7 +28,7 @@ const chrome = spawn("google-chrome", [
 ], { stdio: "ignore" });
 
 async function waitForChrome() {
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 150; i++) {
     try { return await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json(); } catch { await sleep(100); }
   }
   throw new Error("chrome did not start");
@@ -392,10 +393,12 @@ async function suiteTreats() {
   await ev(`(() => { const s = window.CaiusRun.state; for (let i = 0; i < 5; i++) s.treats.push({ lane: 1, wz: s.scroll + ${C.dogZ} + 1.2 + i * ${C.treatSpacing} }); for (let i = 0; i < 4; i++) s.treats.push({ lane: 0, wz: s.scroll + ${C.dogZ} + 1.2 + i * ${C.treatSpacing} }); })()`);
   await sleep(350); await shot("01-bones-approaching.png");
   await sleep(1800);
+  // Read state and score in one evaluation: the run keeps moving between two calls.
+  const both = await ev("JSON.stringify({ sc: window.CaiusRun.currentScore(), scroll: window.CaiusRun.state.scroll })").then(JSON.parse);
   let s = await S();
-  const sc = await ev("window.CaiusRun.currentScore()");
+  const sc = both.sc;
   check("running through a line collects every bone in it", s.treatCount === 5, `collected ${s.treatCount}`);
-  check("each bone adds CONFIG.treatValue to the score", s.treatPoints === 5 * C.treatValue && sc === Math.floor(s.scroll * C.scorePerZ) + s.treatPoints, `treatPoints ${s.treatPoints}, score ${sc}`);
+  check("each bone adds CONFIG.treatValue to the score", s.treatPoints === 5 * C.treatValue && sc === Math.floor(both.scroll * C.scorePerZ) + s.treatPoints, `treatPoints ${s.treatPoints}, score ${sc}`);
   check("bones in another lane are not collected and despawn behind the camera", s.treats.length === 0 && !s.crashed);
   await ev(`(() => { const s = window.CaiusRun.state; for (let i = 0; i < 3; i++) s.treats.push({ lane: 1, wz: s.scroll + ${C.dogZ} + 0.9 + i * ${C.treatSpacing} }); })()`);
   await sleep(500); await shot("02-collecting.png"); await sleep(800);
