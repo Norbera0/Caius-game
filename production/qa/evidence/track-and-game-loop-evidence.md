@@ -28,5 +28,8 @@
 
 ## Sign-off
 
-Look: covered above. **Feel (scroll smoothness, 60 fps on a real phone) is not covered by a still** — DEFERRED to hands-on phone test / `/team-qa`.
-Lead sign-off: [ ] pending — user to confirm
+Look: covered above by the retained screenshots. A still cannot show feel (scroll smoothness, fps); the user reported running the build and approving how it looks and runs. No fps measurement was taken.
+
+| Role | Name | Date | Sign-off |
+|------|------|------|----------|
+| Lead (solo developer) | user | 2026-10-05 | [x] Approved |

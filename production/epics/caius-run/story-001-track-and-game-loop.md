@@ -1,12 +1,12 @@
 # Story 001: Pseudo-3D track and game loop
 
 > **Epic**: Caius Run
-> **Status**: In Progress
+> **Status**: Complete
 > **Layer**: Foundation
 > **Type**: Visual/Feel
 > **Estimate**: M
 > **Manifest Version**: N/A (minimal — no control manifest)
-> **Last Updated**: 2026-10-02
+> **Last Updated**: 2026-10-05
 
 ## Context
 
@@ -28,14 +28,14 @@
 
 *From `design/game-brief.md` (the **Player goal & fail state** field + the MVP feature this story implements), scoped to this story:*
 
-- [ ] Game is one self-contained `src/index.html`: inline CSS + JS, vanilla JS + `<canvas>`, no external libraries, fonts or network requests.
-- [ ] Canvas fills the viewport in portrait, is DPR-aware, and resizes correctly on any phone size and on rotation; no scrollbars appear.
-- [ ] 3 lanes are drawn with perspective: lane edges converge to a horizon point; lane markings scroll toward the camera to show forward motion.
-- [ ] One projection function maps (lane, depth) to screen x, y and scale; objects at the horizon are small and grow as depth approaches the camera.
-- [ ] A placeholder Caius (simple shape) sits near the bottom, camera directly behind, in the middle lane at start.
-- [ ] Game loop uses `requestAnimationFrame` with clamped delta time; returning from a hidden tab causes no time jump.
-- [ ] Forward speed is a single variable that scrolls the track; changing it visibly changes scroll rate.
-- [ ] Code is split into labelled sections: config, rendering, input, game loop, spawning, collision, screens. All tunables live in one `CONFIG` object (gameplay values are data-driven).
+- [x] Game is one self-contained `src/index.html`: inline CSS + JS, vanilla JS + `<canvas>`, no external libraries, fonts or network requests.
+- [x] Canvas fills the viewport in portrait, is DPR-aware, and resizes correctly on any phone size and on rotation; no scrollbars appear.
+- [x] 3 lanes are drawn with perspective: lane edges converge to a horizon point; lane markings scroll toward the camera to show forward motion.
+- [x] One projection function maps (lane, depth) to screen x, y and scale; objects at the horizon are small and grow as depth approaches the camera.
+- [x] A placeholder Caius (simple shape) sits near the bottom, camera directly behind, in the middle lane at start.
+- [x] Game loop uses `requestAnimationFrame` with clamped delta time; returning from a hidden tab causes no time jump.
+- [x] Forward speed is a single variable that scrolls the track; changing it visibly changes scroll rate.
+- [x] Code is split into labelled sections: config, rendering, input, game loop, spawning, collision, screens. All tunables live in one `CONFIG` object (gameplay values are data-driven).
 
 ---
 
@@ -80,3 +80,12 @@
 
 - Depends on: None
 - Unlocks: Story 002, Story 003
+
+---
+
+## Completion Notes
+**Completed**: 2026-10-05
+**Criteria**: 8/8 passing (clamped dt and tab-hidden reset verified by code reading; rotation checked by window resize only)
+**Deviations**: None. Advisory: placeholder dog drawing uses inline size ratios (~15 literals); story 006 replaces that art.
+**Test Evidence**: Visual/Feel: evidence doc at `production/qa/evidence/track-and-game-loop-evidence.md`, 5 retained screenshots, sign-off Approved. Tests waived at `qa.level: minimal`.
+**Code Review**: Skipped — solo mode

@@ -1,12 +1,12 @@
 # Story 002: Input, lane slide and jump
 
 > **Epic**: Caius Run
-> **Status**: Ready
+> **Status**: Complete
 > **Layer**: Core
 > **Type**: Logic
 > **Estimate**: M
 > **Manifest Version**: N/A (minimal — no control manifest)
-> **Last Updated**: [set by /dev-story when implementation begins]
+> **Last Updated**: 2026-10-05
 
 ## Context
 
@@ -28,14 +28,14 @@
 
 *From `design/game-brief.md` (the **Player goal & fail state** field + the MVP feature this story implements), scoped to this story:*
 
-- [ ] Swipe left / right changes lane by exactly one; lane index is clamped to 0–2; the move is a quick eased slide (~120 ms, tunable).
-- [ ] Arrow Left/Right and A/D do the same as swipes.
-- [ ] Swipe up, a tap, or Space triggers a jump: gravity arc with tunable height and airtime; no double jump while airborne.
-- [ ] Gesture rule: a touch moving beyond a minimum distance (~30 px) is a swipe on its dominant axis; a short touch below that is a tap.
-- [ ] One input is buffered during a lane slide so quick consecutive swipes all register.
-- [ ] While playing: no page scroll, no pinch/double-tap zoom, no pull-to-refresh (`touch-action: none`, `overscroll-behavior: none`, viewport `user-scalable=no`, `preventDefault` on touch events).
+- [x] Swipe left / right changes lane by exactly one; lane index is clamped to 0–2; the move is a quick eased slide (~120 ms, tunable).
+- [x] Arrow Left/Right and A/D do the same as swipes.
+- [x] Swipe up, a tap, or Space triggers a jump: gravity arc with tunable height and airtime; no double jump while airborne.
+- [x] Gesture rule: a touch moving beyond a minimum distance (~30 px) is a swipe on its dominant axis; a short touch below that is a tap.
+- [x] One input is buffered during a lane slide so quick consecutive swipes all register.
+- [x] While playing: no page scroll, no pinch/double-tap zoom, no pull-to-refresh (`touch-action: none`, `overscroll-behavior: none`, viewport `user-scalable=no`, `preventDefault` on touch events).
 - [ ] Jump clears a low obstacle at the intended spacing (verified against CONFIG values, see story 003).
-- [ ] Input works with touch, mouse (desktop testing) and keyboard without double-firing.
+- [x] Input works with touch, mouse (desktop testing) and keyboard without double-firing.
 
 ---
 
@@ -79,3 +79,12 @@
 
 - Depends on: Story 001
 - Unlocks: Story 003
+
+---
+
+## Completion Notes
+**Completed**: 2026-10-05
+**Criteria**: 7/8 passing; 1 DEFERRED — "jump clears a low obstacle" needs obstacle depth and maxSpeed from story 003 (re-verify there; jump covers 5.58 z units at base speed 9)
+**Deviations**: Advisory — added `tools/qa/cdp-check.mjs` (zero-dependency DevTools-protocol check) outside the story's files
+**Test Evidence**: Logic: test waived at `qa.level: minimal`; `node tools/qa/cdp-check.mjs` 38/38 PASS, log + 3 screenshots in `production/qa/evidence/input-and-movement/`
+**Code Review**: Skipped — solo mode

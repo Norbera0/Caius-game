@@ -59,6 +59,12 @@ const CONFIG = {
   dogSizeRatio: 0.72,       // dog height as a fraction of a lane width at its depth
   baseSpeed: 9,             // forward speed, z units per second
   maxDt: 0.05,              // delta-time clamp (seconds)
+  laneSlideTime: 0.12,      // seconds for one lane change (eased)
+  jumpHeight: 0.85,         // peak jump height, in lane widths
+  jumpAirtime: 0.62,        // seconds from take-off to landing
+  swipeMinDist: 30,         // px a touch must travel to count as a swipe
+  tapMaxMs: 350,            // longest touch (ms) that still counts as a tap
+  inputBuffer: 1,           // lane moves queued while a slide is running
   dashPeriod: 2.4,          // z distance between lane-marking dashes
   dashLength: 1.1,          // z length of one dash
   grassBandPeriod: 3.0,     // z length of one grass stripe
@@ -93,7 +99,14 @@ const state = {
   speed: CONFIG.baseSpeed,
   scroll: 0,      // total z distance travelled, wraps visually via modulo
   runPhase: 0,    // drives the placeholder dog's stride
-  lane: CONFIG.startLane,
+  lane: CONFIG.startLane,     // target lane (logical, always an integer)
+  laneVis: CONFIG.startLane,  // drawn lane position (float while sliding)
+  slideFrom: CONFIG.startLane,
+  slideT: 1,                  // slide progress 0..1; 1 = not sliding
+  queue: [],                  // buffered lane moves (-1 / +1)
+  grounded: true,
+  jumpT: 0,                   // seconds since take-off
+  jumpY: 0,                   // height above ground, in lane widths
 };
 
 
@@ -225,18 +238,21 @@ function drawDog(lane, z) {
   const B = view.laneW * p.s * CONFIG.dogSizeRatio * 1.6; // body unit
   const ph = state.runPhase;
   const bob = Math.sin(ph * 2) * B * 0.025;
-  const lift = (k) => Math.max(0, Math.sin(ph + k * Math.PI)) * B * 0.09;
+  const lift = (k) => state.grounded ? Math.max(0, Math.sin(ph + k * Math.PI)) * B * 0.09 : 0;
   const lw = Math.max(1.5, B * 0.022);
-  const x = p.x, y = p.y;
+  const groundY = p.y;
+  const air = state.jumpY * view.laneW * p.s; // jump height in screen px
+  const x = p.x, y = p.y - air;
 
   ctx.lineWidth = lw;
   ctx.lineJoin = "round";
   ctx.strokeStyle = C.dogOutline;
 
   // ground shadow
+  const shrink = 1 / (1 + state.jumpY * 0.8); // shadow stays on the ground, smaller when high
   ctx.fillStyle = "rgba(60,40,10,0.18)";
   ctx.beginPath();
-  ctx.ellipse(x, y, B * 0.30, B * 0.07, 0, 0, Math.PI * 2);
+  ctx.ellipse(x, groundY, B * 0.30 * shrink, B * 0.07 * shrink, 0, 0, Math.PI * 2);
   ctx.fill();
 
   // rear legs (alternate)
@@ -303,14 +319,174 @@ function render() {
   drawBackdrop();
   drawGrassBands();
   drawRoad();
-  drawDog(state.lane, CONFIG.dogZ);
+  drawDog(state.laneVis, CONFIG.dogZ);
 }
 
 
 /* ==========================================================================
-   5. INPUT — story 002 (swipe / tap / keys)
+   5. INPUT — swipe / tap / keyboard → moveLane() and jump()
+   Pointer Events cover touch, mouse and pen with one code path, so a single
+   physical gesture can never fire twice. Keyboard is a separate device.
    ========================================================================== */
-function initInput() { /* story 002 */ }
+
+/**
+ * Classify a finished or in-progress touch. Pure, so the rules are easy to tweak.
+ * @param {number} dx  horizontal travel in px (right positive)
+ * @param {number} dy  vertical travel in px (down positive)
+ * @param {number} dtMs touch duration in ms
+ * @param {boolean} ended true on release, false while the finger is still down
+ * @returns {"left"|"right"|"up"|"down"|"tap"|null} null = not decided yet / ignored
+ */
+function classifyGesture(dx, dy, dtMs, ended) {
+  const dist = Math.hypot(dx, dy);
+  if (dist >= CONFIG.swipeMinDist) {
+    // Dominant axis wins.
+    if (Math.abs(dx) > Math.abs(dy)) return dx < 0 ? "left" : "right";
+    return dy < 0 ? "up" : "down";
+  }
+  if (ended && dtMs <= CONFIG.tapMaxMs) return "tap";
+  return null;
+}
+
+/** Route a classified gesture to an action. */
+function applyGesture(g) {
+  if (g === "left") moveLane(-1);
+  else if (g === "right") moveLane(1);
+  else if (g === "up" || g === "tap") jump();
+  // "down" intentionally does nothing (no slide/duck in the MVP)
+}
+
+const touch = { id: null, x: 0, y: 0, t: 0, fired: false };
+
+function onPointerDown(e) {
+  e.preventDefault();
+  if (touch.id !== null) return; // one finger drives the dog
+  touch.id = e.pointerId;
+  touch.x = e.clientX;
+  touch.y = e.clientY;
+  touch.t = e.timeStamp;
+  touch.fired = false;
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* not fatal */ }
+}
+
+function onPointerMove(e) {
+  if (e.pointerId !== touch.id || touch.fired) return;
+  // Decide a swipe the moment it passes the threshold: responsive, no wait for release.
+  const g = classifyGesture(e.clientX - touch.x, e.clientY - touch.y, e.timeStamp - touch.t, false);
+  if (g) { touch.fired = true; applyGesture(g); }
+}
+
+function onPointerUp(e) {
+  if (e.pointerId !== touch.id) return;
+  if (!touch.fired) {
+    applyGesture(classifyGesture(e.clientX - touch.x, e.clientY - touch.y, e.timeStamp - touch.t, true));
+  }
+  touch.id = null;
+}
+
+function onPointerCancel(e) {
+  if (e.pointerId === touch.id) touch.id = null;
+}
+
+function onKeyDown(e) {
+  if (e.repeat) return; // holding a key must not spam moves
+  switch (e.code) {
+    case "ArrowLeft": case "KeyA": moveLane(-1); break;
+    case "ArrowRight": case "KeyD": moveLane(1); break;
+    case "ArrowUp": case "KeyW": case "Space": jump(); break;
+    default: return;
+  }
+  e.preventDefault();
+}
+
+/** Wire all listeners. `passive: false` is needed so preventDefault can stop scrolling on older iOS. */
+function initInput() {
+  canvas.addEventListener("pointerdown", onPointerDown);
+  canvas.addEventListener("pointermove", onPointerMove);
+  canvas.addEventListener("pointerup", onPointerUp);
+  canvas.addEventListener("pointercancel", onPointerCancel);
+  window.addEventListener("keydown", onKeyDown);
+  // No page scroll, pull-to-refresh or pinch zoom while playing.
+  const stop = (e) => e.preventDefault();
+  document.addEventListener("touchstart", stop, { passive: false });
+  document.addEventListener("touchmove", stop, { passive: false });
+  document.addEventListener("gesturestart", stop);   // iOS Safari pinch
+  document.addEventListener("dblclick", stop);       // double-tap zoom fallback
+  document.addEventListener("contextmenu", stop);    // long-press menu
+  document.addEventListener("wheel", stop, { passive: false });
+}
+
+
+/* ==========================================================================
+   5b. MOVEMENT — lane slide and jump (driven by input, advanced by update())
+   ========================================================================== */
+
+/**
+ * Change lane by one step. Clamped to the track. A second move while a slide
+ * is running is buffered (up to CONFIG.inputBuffer) and replayed when it ends.
+ * @param {-1|1} dir  -1 = left, +1 = right
+ */
+function moveLane(dir) {
+  const sliding = state.slideT < 1;
+  // Clamp against where the dog is heading, including already-queued moves.
+  const heading = state.lane + state.queue.reduce((a, b) => a + b, 0);
+  const next = heading + dir;
+  if (next < 0 || next > CONFIG.lanes - 1) return;
+  if (sliding) {
+    if (state.queue.length < CONFIG.inputBuffer) state.queue.push(dir);
+    return;
+  }
+  startSlide(dir);
+}
+
+function startSlide(dir) {
+  state.slideFrom = state.laneVis;
+  state.lane += dir;
+  state.slideT = 0;
+}
+
+/** Jump if on the ground. No double jump while airborne. */
+function jump() {
+  if (!state.grounded) return;
+  state.grounded = false;
+  state.jumpT = 0;
+}
+
+/** Gravity implied by the tunables: peak h at T/2 gives g = 8h / T². */
+function jumpGravity() {
+  return (8 * CONFIG.jumpHeight) / (CONFIG.jumpAirtime * CONFIG.jumpAirtime);
+}
+
+/** World distance (z units) covered while airborne at a given speed. */
+function jumpAirDistance(speed) {
+  return speed * CONFIG.jumpAirtime;
+}
+
+/** Advance slide and jump by dt seconds. */
+function updateMovement(dt) {
+  if (state.slideT < 1) {
+    state.slideT = Math.min(1, state.slideT + dt / CONFIG.laneSlideTime);
+    const e = state.slideT * state.slideT * (3 - 2 * state.slideT); // smoothstep ease
+    state.laneVis = state.slideFrom + (state.lane - state.slideFrom) * e;
+    if (state.slideT >= 1) {
+      state.laneVis = state.lane;
+      const next = state.queue.shift();
+      if (next !== undefined) startSlide(next);
+    }
+  }
+  if (!state.grounded) {
+    state.jumpT += dt;
+    const u = state.jumpT / CONFIG.jumpAirtime;
+    if (u >= 1) {
+      state.grounded = true;
+      state.jumpT = 0;
+      state.jumpY = 0;
+    } else {
+      // Exact parabola under constant gravity: y = 4 h u (1 - u).
+      state.jumpY = 4 * CONFIG.jumpHeight * u * (1 - u);
+    }
+  }
+}
 
 
 /* ==========================================================================
@@ -340,6 +516,7 @@ let lastTime = null;
 function update(dt) {
   state.scroll += state.speed * dt;
   state.runPhase += state.speed * dt * 1.6;
+  updateMovement(dt);
   updateSpawning(dt);
   updateCollision();
 }
@@ -363,7 +540,7 @@ document.addEventListener("visibilitychange", () => { lastTime = null; });
 // Debug: ?speed=N overrides the forward speed (verifies the single speed variable).
 const speedParam = parseFloat(new URLSearchParams(location.search).get("speed"));
 if (Number.isFinite(speedParam)) state.speed = speedParam;
-window.CaiusRun = { CONFIG, state, view, project };
+window.CaiusRun = { CONFIG, state, view, project, classifyGesture, moveLane, jump, jumpGravity, jumpAirDistance };
 
 window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", resize);
