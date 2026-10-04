@@ -99,6 +99,7 @@ try {
   if (want("input-and-movement")) await suiteInput();
   if (want("obstacles-spawner-collision")) await suiteObstacles();
   if (want("score-and-screens")) await suiteScreens();
+  if (want("treats")) await suiteTreats();
 } catch (e) {
   check("harness ran without error", false, String(e.stack || e));
 } finally {
@@ -351,4 +352,66 @@ async function suiteScreens() {
   b = await button();
   check("Game Over button fits a 360x640 screen", b && b.x >= 0 && b.x + b.w <= 360 && b.y + b.h <= 640);
   await metrics(390, 844);
+}
+
+async function suiteTreats() {
+  console.log("\n== treats ==");
+  evidenceDir("treats");
+  await open("?seed=5");
+  const C = await ev("JSON.stringify(window.CaiusRun.CONFIG)").then(JSON.parse);
+
+  // --- simulated spawner: 3 minutes of track, no player ---------------------------
+  const sim = await ev(`(() => {
+    const R = window.CaiusRun, s = R.state;
+    R.resetRun(42); s.running = false; // drive the spawner by hand
+    const obs = new Map(), bones = new Map(); let t = 0;
+    while (t < 180) {
+      t += 0.05; s.time = t; s.speed = R.speedAt(t); s.scroll += s.speed * 0.05;
+      for (const o of s.obstacles) obs.set(o, 1);
+      for (const b of s.treats) bones.set(b, 1);
+      // call the real spawner
+      R._updateSpawning();
+    }
+    const O = [...obs.keys()], B = [...bones.keys()];
+    const lines = new Map(); for (const b of B) { const k = b.lane + ":" + Math.round((b.wz - 0) * 1000); }
+    // group bones into lines: consecutive bones in same lane spaced treatSpacing apart
+    B.sort((a, b) => a.wz - b.wz);
+    const groups = []; for (const b of B) { const g = groups.find(g => g.lane === b.lane && Math.abs(b.wz - g.last - R.CONFIG.treatSpacing) < 1e-6); if (g) { g.n++; g.last = b.wz; } else groups.push({ lane: b.lane, n: 1, last: b.wz, first: b.wz }); }
+    let overlaps = 0;
+    for (const b of B) for (const o of O) if (o.lane === b.lane && Math.abs(o.wz - b.wz) < (R.CONFIG.obstacleTypes[o.type].d + R.CONFIG.treatDepth) / 2 + 0.05) overlaps++;
+    const lanesUsed = [...new Set(groups.map(g => g.lane))].sort();
+    const sizes = groups.map(g => g.n);
+    return JSON.stringify({ obstacles: O.length, bones: B.length, lines: groups.length, minN: Math.min(...sizes), maxN: Math.max(...sizes), overlaps, lanesUsed });
+  })()`).then(JSON.parse);
+  check("bones spawn in lines of 3-8", sim.lines > 20 && sim.minN >= C.treatMinCount && sim.maxN <= C.treatMaxCount, `${sim.lines} lines, ${sim.bones} bones, sizes ${sim.minN}-${sim.maxN}`);
+  check("no bone ever overlaps an obstacle in its lane", sim.overlaps === 0, `${sim.overlaps} overlaps vs ${sim.obstacles} obstacles`);
+  check("lines appear in every lane (tempting lane changes)", sim.lanesUsed.length === 3, `lanes ${sim.lanesUsed}`);
+
+  // --- live pickup -------------------------------------------------------------------
+  await open(`?nospawn&speed=${C.baseSpeed}`);
+  await ev(`(() => { const s = window.CaiusRun.state; for (let i = 0; i < 5; i++) s.treats.push({ lane: 1, wz: s.scroll + ${C.dogZ} + 1.2 + i * ${C.treatSpacing} }); for (let i = 0; i < 4; i++) s.treats.push({ lane: 0, wz: s.scroll + ${C.dogZ} + 1.2 + i * ${C.treatSpacing} }); })()`);
+  await sleep(350); await shot("01-bones-approaching.png");
+  await sleep(1800);
+  let s = await S();
+  const sc = await ev("window.CaiusRun.currentScore()");
+  check("running through a line collects every bone in it", s.treatCount === 5, `collected ${s.treatCount}`);
+  check("each bone adds CONFIG.treatValue to the score", s.treatPoints === 5 * C.treatValue && sc === Math.floor(s.scroll * C.scorePerZ) + s.treatPoints, `treatPoints ${s.treatPoints}, score ${sc}`);
+  check("bones in another lane are not collected and despawn behind the camera", s.treats.length === 0 && !s.crashed);
+  await ev(`(() => { const s = window.CaiusRun.state; for (let i = 0; i < 3; i++) s.treats.push({ lane: 1, wz: s.scroll + ${C.dogZ} + 0.9 + i * ${C.treatSpacing} }); })()`);
+  await sleep(500); await shot("02-collecting.png"); await sleep(800);
+  s = await S();
+  check("score shown live includes treats", s.treatCount === 8);
+
+  // --- reset on retry --------------------------------------------------------------------
+  await ev(`(() => { const s = window.CaiusRun.state; s.obstacles.push({ type: "crate", lane: s.lane, wz: s.scroll + ${C.dogZ} + 0.5 }); })()`);
+  await waitFor("window.CaiusRun.ui.screen === 'gameover'", 2000);
+  const u = await ev("window.CaiusRun.ui.lastScore");
+  check("final score includes treats", u >= 8 * C.treatValue, `final ${u}`);
+  await sleep(C.gameOverInputDelayMs + 50); await key("Enter"); await sleep(100); s = await S();
+  check("treat count and bonus reset on retry", s.treatCount === 0 && s.treatPoints === 0 && s.treats.length === 0);
+
+  // --- natural run screenshot -------------------------------------------------------------
+  await open("?seed=5&nospawn");
+  await ev(`(() => { const R = window.CaiusRun, s = R.state; s.spawnEnabled = true; })()`);
+  await sleep(2400); await shot("03-run-with-bones.png");
 }

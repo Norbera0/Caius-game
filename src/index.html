@@ -73,6 +73,18 @@ const CONFIG = {
   spawnAhead: 13,           // rows are generated this far ahead (scale ~0.07, >2 s warning at max speed)
   fadeInDepth: 2,           // obstacles fade in over this much depth after spawning
   despawnBehind: -0.3,      // obstacles are removed once this far behind the camera plane
+  // --- treats (story 005) ---
+  treatLineChance: 0.55,    // chance a gap between two rows gets a bone line
+  treatSpacing: 0.36,       // z between bones in a line
+  treatMinCount: 3,
+  treatMaxCount: 8,
+  treatClearance: 0.35,     // z kept free between a bone and an obstacle row
+  treatValue: 10,           // bonus points per bone
+  treatWidth: 0.36,         // lane widths
+  treatFloat: 0.16,         // hover height, lane widths
+  treatDepth: 0.12,         // pickup depth, z units
+  treatPickupHalfWidth: 0.45, // lane widths
+  treatMissHeight: 0.6,     // jumping higher than this sails over a bone
   // --- score & screens (story 004) ---
   scorePerZ: 10,            // points per z unit travelled (~25/s at start)
   titleScrollFactor: 0.4,   // track drifts at this fraction of base speed behind the title
@@ -138,6 +150,9 @@ const CONFIG = {
     coneStripe: "#fff6e8",
     coneBase: "#d85c1a",
     obstacleOutline: "#5b3415",
+    bone: "#fff4dc",
+    boneShade: "#efd9b0",
+    boneOutline: "#b98a55",
     uiPanel: "#fff6e6",
     uiText: "#6b3410",
     uiTextSoft: "#a0643a",
@@ -192,7 +207,10 @@ function resetRun(seed) {
     grounded: true,
     jumpT: 0,                   // seconds since take-off
     jumpY: 0,                   // height above ground, in lane widths
-    treatPoints: 0,             // bonus points from treats (story 005)
+    treatPoints: 0,             // bonus points from treats
+    treatCount: 0,              // bones collected this run
+    treats: [],                 // { lane, wz } bones not yet collected
+    reach: allLanes(),          // lanes a player can be in after the last spawned row
     seed: s,
     rng: mulberry32(s),
     spawnEnabled: !debug.noSpawn,
@@ -519,6 +537,40 @@ function drawCone(lane, z) {
 
 const OBSTACLE_DRAW = { crate: drawCrate, log: drawLog, cone: drawCone };
 
+/** A floating, gently bobbing bone treat. */
+function drawBone(lane, z, seed) {
+  const C = CONFIG.colors;
+  const p = project(laneToX(lane), z);
+  const u = view.laneW * p.s;
+  const w = CONFIG.treatWidth * u;
+  const bob = Math.sin(state.runPhase * 0.5 + seed * 3) * 0.04 * u;
+  const cy = p.y - CONFIG.treatFloat * u - w * 0.25 + bob;
+  const r = w * 0.17;
+  // shadow
+  ctx.fillStyle = "rgba(60,40,10,0.14)";
+  ctx.beginPath();
+  ctx.ellipse(p.x, p.y, w * 0.38, w * 0.08, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.lineWidth = Math.max(1, u * 0.022);
+  ctx.strokeStyle = C.boneOutline;
+  ctx.fillStyle = C.bone;
+  ctx.beginPath();
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+    ctx.moveTo(p.x + sx * (w / 2 - r) + r, cy + sy * r * 0.8);
+    ctx.arc(p.x + sx * (w / 2 - r), cy + sy * r * 0.8, r, 0, Math.PI * 2);
+  }
+  ctx.fill();
+  ctx.stroke();
+  roundRectPath(p.x - w / 2 + r, cy - r * 0.75, w - 2 * r, r * 1.5, r * 0.5);
+  ctx.fill();
+  ctx.stroke();
+  // hide the inner outlines where shaft meets knobs
+  ctx.fillStyle = C.bone;
+  ctx.fillRect(p.x - w / 2 + r * 0.9, cy - r * 0.62, w - 1.8 * r, r * 1.24);
+  ctx.fillStyle = C.boneShade;
+  ctx.fillRect(p.x - w / 2 + r * 1.2, cy + r * 0.15, w - 2.4 * r, r * 0.4);
+}
+
 /** Draw one full frame. World objects are painted far to near. */
 function render() {
   drawBackdrop();
@@ -530,6 +582,12 @@ function render() {
     if (z <= 0 || z >= CONFIG.viewDepth) continue;
     const alpha = Math.max(0, Math.min(1, (CONFIG.spawnAhead - z) / CONFIG.fadeInDepth));
     items.push({ z, draw: () => { ctx.globalAlpha = alpha; OBSTACLE_DRAW[o.type](o.lane, z); ctx.globalAlpha = 1; } });
+  }
+  for (const t of state.treats) {
+    const z = t.wz - state.scroll;
+    if (z <= 0 || z >= CONFIG.viewDepth) continue;
+    const alpha = Math.max(0, Math.min(1, (CONFIG.spawnAhead - z) / CONFIG.fadeInDepth));
+    items.push({ z, draw: () => { ctx.globalAlpha = alpha; drawBone(t.lane, z, t.wz); ctx.globalAlpha = 1; } });
   }
   items.push({ z: CONFIG.dogZ, draw: () => drawDog(state.laneVis, CONFIG.dogZ) });
   items.sort((a, b) => b.z - a.z);
@@ -789,6 +847,23 @@ function generateRow(prevPassable, d, rng) {
   return allLanes().map(() => null); // an empty row is always fair
 }
 
+/**
+ * A line of bones in the gap after an obstacle row, in one lane the player can be in.
+ * It starts clear of this row and ends early enough to leave the lane before the
+ * next row (one slide plus reaction margin), so a bone line is a temptation, never a trap.
+ * @returns {{lane:number, wz:number}[]} empty when the gap is too short for the minimum line
+ */
+function generateTreatLine(rowWz, gapZ, lanes, speed, rng) {
+  const start = rowWz + CONFIG.treatClearance;
+  const end = rowWz + gapZ - CONFIG.treatClearance - speed * (CONFIG.laneSlideTime + CONFIG.rowSafetyMargin);
+  const fit = Math.floor((end - start) / CONFIG.treatSpacing) + 1;
+  const max = Math.min(CONFIG.treatMaxCount, fit);
+  if (max < CONFIG.treatMinCount) return [];
+  const n = CONFIG.treatMinCount + Math.floor(rng() * (max - CONFIG.treatMinCount + 1));
+  const lane = lanes[Math.floor(rng() * lanes.length)];
+  return Array.from({ length: n }, (_, i) => ({ lane, wz: start + i * CONFIG.treatSpacing }));
+}
+
 /** Spawn rows up to CONFIG.spawnAhead and drop obstacles that passed the camera. */
 function updateSpawning() {
   if (state.spawnEnabled) {
@@ -796,11 +871,18 @@ function updateSpawning() {
       const d = difficulty(state.speed);
       const row = generateRow(state.prevPassable, d, state.rng);
       row.forEach((type, lane) => { if (type) state.obstacles.push({ type, lane, wz: state.nextRowWz }); });
-      state.prevPassable = passableLanes(row);
-      state.nextRowWz += state.speed * rowGapTime(d);
+      const pass = passableLanes(row);
+      state.prevPassable = pass;
+      state.reach = pass.filter((q) => state.reach.some((p) => Math.abs(p - q) <= CONFIG.laneReach));
+      const gapZ = state.speed * rowGapTime(d);
+      if (state.reach.length > 0 && state.rng() < CONFIG.treatLineChance) {
+        state.treats.push(...generateTreatLine(state.nextRowWz, gapZ, state.reach, state.speed, state.rng));
+      }
+      state.nextRowWz += gapZ;
     }
   }
   state.obstacles = state.obstacles.filter((o) => o.wz - state.scroll > CONFIG.despawnBehind);
+  state.treats = state.treats.filter((t) => t.wz - state.scroll > CONFIG.despawnBehind);
 }
 
 /**
@@ -863,7 +945,23 @@ function canClearLow(type, speed) {
 }
 
 /** Hooks for other systems (screens, juice). */
-const events = { onCrash: [] };
+const events = { onCrash: [], onTreat: [] };
+
+/** Collect bones the dog runs through. A bone never ends the run. */
+function updateTreats() {
+  const keep = [];
+  for (const t of state.treats) {
+    const z = t.wz - state.scroll;
+    const hit = Math.abs(z - CONFIG.dogZ) < (CONFIG.treatDepth + CONFIG.dogDepth) / 2
+      && Math.abs(state.laneVis - t.lane) < CONFIG.treatPickupHalfWidth
+      && state.jumpY < CONFIG.treatMissHeight;
+    if (!hit) { keep.push(t); continue; }
+    state.treatPoints += CONFIG.treatValue;
+    state.treatCount += 1;
+    for (const fn of events.onTreat) fn(t, z);
+  }
+  state.treats = keep;
+}
 
 /** End the run on the first hit. */
 function updateCollision() {
@@ -1073,6 +1171,7 @@ function update(dt) {
   state.runPhase += dt * CONFIG.strideRate * Math.sqrt(state.speed / CONFIG.baseSpeed);
   updateMovement(dt);
   updateSpawning();
+  updateTreats();
   updateCollision();
 }
 
@@ -1098,8 +1197,8 @@ events.onCrash.push(showGameOver);
 // Exposed for debugging and tools/qa checks.
 window.CaiusRun = {
   CONFIG, state, view, events, project, classifyGesture, moveLane, jump, jumpGravity, jumpAirDistance,
-  ui, startRun, currentScore, resetRun, generateRow, isRowFair, passableLanes, fairnessSelfTest, hitTest, canClearLow, speedAt,
-  rowGapTime, minSafeGapTime, mulberry32,
+  ui, startRun, currentScore, resetRun, generateRow, generateTreatLine, isRowFair, passableLanes, fairnessSelfTest, hitTest, canClearLow, speedAt,
+  rowGapTime, minSafeGapTime, mulberry32, _updateSpawning: updateSpawning,
 };
 
 window.addEventListener("resize", resize);
