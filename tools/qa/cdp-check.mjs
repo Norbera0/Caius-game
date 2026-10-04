@@ -1,7 +1,8 @@
-// Headless-Chrome check for story 002 (input + movement), driven over the DevTools
-// protocol so real key / touch / mouse events go through the browser's input pipeline.
+// Headless-Chrome checks for Caius Run, driven over the DevTools protocol so real
+// key / touch / mouse events go through the browser's input pipeline.
 // Zero dependencies: Node 22+ (global WebSocket/fetch) and a local google-chrome.
-// Usage: node tools/qa/cdp-check.mjs [evidence-dir]
+// Usage: node tools/qa/cdp-check.mjs [suite ...]   (default: all suites)
+// Each suite saves screenshots to production/qa/evidence/<suite>/.
 import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,8 +10,10 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const PORT = 9333;
-const EVID = resolve(process.argv[2] ?? "production/qa/evidence/input-and-movement");
-mkdirSync(EVID, { recursive: true });
+const SUITES = process.argv.slice(2);
+const want = (name) => SUITES.length === 0 || SUITES.includes(name);
+let EVID = "";
+const evidenceDir = (suite) => { EVID = resolve("production/qa/evidence", suite); mkdirSync(EVID, { recursive: true }); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
 const check = (name, ok, detail = "") => {
@@ -42,8 +45,18 @@ const ev = async (expr) => {
   if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails));
   return r.result.value;
 };
-const S = () => ev("JSON.stringify(window.CaiusRun.state)").then(JSON.parse);
+const S = () => ev("(({rng, ...s}) => JSON.stringify(s))(window.CaiusRun.state)").then(JSON.parse);
 const reset = () => ev(`Object.assign(window.CaiusRun.state,{lane:1,laneVis:1,slideFrom:1,slideT:1,queue:[],grounded:true,jumpT:0,jumpY:0})`);
+async function open(query = "") {
+  await send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await send("Page.navigate", { url: pathToFileURL(resolve("src/index.html")).href + query });
+  await sleep(600);
+}
+async function waitFor(expr, ms = 3000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { if (await ev(expr)) return true; await sleep(16); }
+  return false;
+}
 
 const KEYS = {
   ArrowLeft: { key: "ArrowLeft", vk: 37 }, ArrowRight: { key: "ArrowRight", vk: 39 },
@@ -79,10 +92,24 @@ try {
   await send("Page.enable");
   await send("Runtime.enable");
   await send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
-  const url = pathToFileURL(resolve("src/index.html")).href;
-  await send("Page.navigate", { url });
-  await sleep(800);
 
+  if (want("input-and-movement")) await suiteInput();
+  if (want("obstacles-spawner-collision")) await suiteObstacles();
+} catch (e) {
+  check("harness ran without error", false, String(e.stack || e));
+} finally {
+  const failed = results.filter((r) => !r.ok).length;
+  console.log(`\n${results.length - failed}/${results.length} passed`);
+  try { ws?.close(); } catch {}
+  chrome.kill();
+  process.exit(failed ? 1 : 0);
+}
+
+async function suiteInput() {
+  console.log("\n== input-and-movement ==");
+  evidenceDir("input-and-movement");
+  await open("?nospawn");
+  let s;
   // --- pure gesture classifier ---------------------------------------------
   const cg = (...a) => ev(`window.CaiusRun.classifyGesture(${a.join(",")})`);
   check("classify: -31px x = left", (await cg(-31, 0, 100, true)) === "left");
@@ -95,7 +122,7 @@ try {
 
   // --- keyboard -------------------------------------------------------------
   await reset(); await key("ArrowLeft"); await sleep(250);
-  let s = await S(); check("ArrowLeft: lane 1 -> 0, slide finished", s.lane === 0 && s.laneVis === 0, `lane=${s.lane} vis=${s.laneVis}`);
+  s = await S(); check("ArrowLeft: lane 1 -> 0, slide finished", s.lane === 0 && s.laneVis === 0, `lane=${s.lane} vis=${s.laneVis}`);
   await key("ArrowLeft"); await sleep(250); s = await S();
   check("ArrowLeft at left edge: clamped at lane 0", s.lane === 0);
   await key("KeyD"); await sleep(250); s = await S(); check("D: lane 0 -> 1", s.lane === 1);
@@ -171,12 +198,75 @@ try {
   check("body overflow hidden, page not scrollable", page1.ov === "hidden" && page1.sh <= page1.ch && page1.sy === 0, `sh=${page1.sh} ch=${page1.ch}`);
   check("touchstart, touchmove and dblclick are preventDefault-ed", page1.tm && page1.ts && page1.dc);
   await swipe(0, -120); await sleep(100); check("after vertical swipe: scrollY still 0", (await ev("scrollY")) === 0);
-} catch (e) {
-  check("harness ran without error", false, String(e));
-} finally {
-  const failed = results.filter((r) => !r.ok).length;
-  console.log(`\n${results.length - failed}/${results.length} passed`);
-  try { ws?.close(); } catch {}
-  chrome.kill();
-  process.exit(failed ? 1 : 0);
+}
+
+async function suiteObstacles() {
+  console.log("\n== obstacles-spawner-collision ==");
+  evidenceDir("obstacles-spawner-collision");
+  await open("?nospawn");
+  const C = await ev("JSON.stringify(window.CaiusRun.CONFIG)").then(JSON.parse);
+
+  // --- pure rules -------------------------------------------------------------
+  const ft = await ev("JSON.stringify(window.CaiusRun.fairnessSelfTest(20000, 1))").then(JSON.parse);
+  check(`fairness self-test: ${ft.rows} rows at difficulty 0/0.5/1 always leave a reachable lane, never 3 crates`, ft.ok, ft.failures.join("; "));
+  const ft2 = await ev("JSON.stringify(window.CaiusRun.fairnessSelfTest(20000, 987654))").then(JSON.parse);
+  check("fairness self-test, second seed", ft2.ok, ft2.failures.join("; "));
+  const dens = await ev(`(() => { const R = window.CaiusRun, rng = R.mulberry32(3); const avg = (d) => { let prev=[0,1,2], n=0; for (let i=0;i<5000;i++){ const r=R.generateRow(prev,d,rng); n+=r.filter(Boolean).length; prev=R.passableLanes(r);} return n/5000; }; return JSON.stringify({ d0: avg(0), d1: avg(1), g0: R.rowGapTime(0), g1: R.rowGapTime(1), safe: R.minSafeGapTime() }); })()`).then(JSON.parse);
+  check("density rises: more obstacles per row at difficulty 1", dens.d1 > dens.d0 + 0.3, `avg ${dens.d0.toFixed(2)} -> ${dens.d1.toFixed(2)}`);
+  check("density rises: shorter row gap at difficulty 1, still >= safe minimum", dens.g1 < dens.g0 && dens.g1 >= dens.safe, `gap ${dens.g0}s -> ${dens.g1}s, safe ${dens.safe.toFixed(2)}s`);
+  const sp = await ev("JSON.stringify([0, 30, 60, 90, 300].map(window.CaiusRun.speedAt))").then(JSON.parse);
+  check("speed ramps gradually from base to cap", sp[0] === C.baseSpeed && sp[1] < sp[2] && sp[2] < sp[3] && sp[4] === C.maxSpeed, sp.map((v) => v.toFixed(2)).join(" -> "));
+  const H = (t, lane, z, dl, dy) => ev(`window.CaiusRun.hitTest("${t}", ${lane}, ${z}, ${dl}, ${dy})`);
+  check("hit: crate in dog lane at dog depth, grounded", await H("crate", 1, C.dogZ, 1, 0));
+  check("hit: crate cannot be jumped (dog at jump peak)", await H("crate", 1, C.dogZ, 1, C.jumpHeight));
+  check("hit: log grounded", await H("log", 1, C.dogZ, 1, 0));
+  check("no hit: log while airborne above it", !(await H("log", 1, C.dogZ, 1, 0.5)));
+  check("no hit: cone while airborne above it", !(await H("cone", 1, C.dogZ, 1, 0.5)));
+  check("no hit: crate in neighbouring lane", !(await H("crate", 0, C.dogZ, 1, 0)));
+  check("no hit: crate still far ahead", !(await H("crate", 1, C.dogZ + 1, 1, 0)));
+  check("hit: half-way through a slide into a crate lane", await H("crate", 2, C.dogZ, 1.5, 0));
+  for (const t of ["log", "cone"]) {
+    const ok = await ev(`window.CaiusRun.canClearLow("${t}", ${C.maxSpeed}) && window.CaiusRun.canClearLow("${t}", ${C.baseSpeed})`);
+    check(`jump clears a ${t} at base and max speed (story 002 deferred AC)`, ok);
+  }
+
+  // --- live: spawning -----------------------------------------------------------
+  await open("?seed=7");
+  await sleep(2600);
+  let s = await S();
+  const zs = s.obstacles.map((o) => o.wz - s.scroll);
+  check("obstacles spawn ahead and move toward the camera", s.obstacles.length > 0 && Math.max(...zs) <= C.spawnAhead + C.maxSpeed * C.rowGapTimeStart && zs.every((z) => z > C.despawnBehind), `${s.obstacles.length} obstacles, z ${Math.min(...zs).toFixed(1)}..${Math.max(...zs).toFixed(1)}`);
+  await shot("01-obstacles-approaching.png");
+  await waitFor("window.CaiusRun.state.crashed", 12000);
+  s = await S();
+  check("idle dog eventually crashes into something (collision live)", s.crashed && !s.running, `crashed on ${s.crashedOn} after ${s.time.toFixed(1)}s`);
+  await shot("02-crash.png");
+  const sc1 = (await S()).scroll; await sleep(300); const sc2 = (await S()).scroll;
+  check("after a crash the run stops advancing", sc1 === sc2);
+
+  // --- live: scripted encounters (no random spawns) ----------------------------------
+  const place = (type, lane, ahead) => ev(`(() => { const s = window.CaiusRun.state; s.obstacles.push({ type: "${type}", lane: ${lane}, wz: s.scroll + ${C.dogZ} + ${ahead} }); })()`);
+  // Jump at the moment the obstacle is half a jump away, from inside the page so timing is exact.
+  const autoJump = () => ev(`(() => { const R = window.CaiusRun; const lead = () => R.state.speed * R.CONFIG.jumpAirtime / 2; const tick = () => { const o = R.state.obstacles[0]; if (!o) return; if (o.wz - R.state.scroll - R.CONFIG.dogZ <= lead()) R.jump(); else requestAnimationFrame(tick); }; requestAnimationFrame(tick); })()`);
+  for (const speed of [C.baseSpeed, C.maxSpeed]) {
+    for (const type of ["log", "cone"]) {
+      await open(`?nospawn&speed=${speed}`);
+      await place(type, 1, speed * 0.8); await autoJump(); await sleep(1600); s = await S();
+      check(`well-timed jump clears a ${type} at speed ${speed}`, !s.crashed && s.obstacles.length === 0, s.crashed ? `crashed on ${s.crashedOn}` : "passed + despawned");
+    }
+  }
+  await open(`?nospawn&speed=${C.baseSpeed}`);
+  await place("log", 1, 1.5); await sleep(1500); s = await S();
+  check("running into a log without jumping ends the run", s.crashed && s.crashedOn === "log");
+  await open(`?nospawn&speed=${C.baseSpeed}`);
+  await place("crate", 1, 1.5); await autoJump(); await sleep(1500); s = await S();
+  check("jumping into a crate still ends the run", s.crashed && s.crashedOn === "crate");
+  await open(`?nospawn&speed=${C.baseSpeed}`);
+  await place("crate", 1, 2.5); await sleep(200); await key("ArrowLeft"); await sleep(1500); s = await S();
+  check("switching lanes avoids a crate", !s.crashed && s.lane === 0);
+  await open(`?nospawn&speed=${C.baseSpeed}`);
+  await place("crate", 0, 1.2); await place("cone", 2, 1.2); await sleep(1200);
+  await shot("03-row-passing-dog.png");
+  await sleep(600); s = await S();
+  check("obstacles in other lanes pass by and despawn", !s.crashed && s.obstacles.length === 0);
 }

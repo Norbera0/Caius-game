@@ -34,7 +34,7 @@
 - [x] Gesture rule: a touch moving beyond a minimum distance (~30 px) is a swipe on its dominant axis; a short touch below that is a tap.
 - [x] One input is buffered during a lane slide so quick consecutive swipes all register.
 - [x] While playing: no page scroll, no pinch/double-tap zoom, no pull-to-refresh (`touch-action: none`, `overscroll-behavior: none`, viewport `user-scalable=no`, `preventDefault` on touch events).
-- [ ] Jump clears a low obstacle at the intended spacing (verified against CONFIG values, see story 003).
+- [x] Jump clears a low obstacle at the intended spacing (verified against CONFIG values, see story 003).
 - [x] Input works with touch, mouse (desktop testing) and keyboard without double-firing.
 
 ---
@@ -84,7 +84,7 @@
 
 ## Completion Notes
 **Completed**: 2026-10-05
-**Criteria**: 7/8 passing; 1 DEFERRED — "jump clears a low obstacle" needs obstacle depth and maxSpeed from story 003 (re-verify there; jump covers 5.58 z units at base speed 9)
+**Criteria**: 8/8 passing ("jump clears a low obstacle" was deferred here and verified in story 003: clears log and cone at base and max speed)
 **Deviations**: Advisory — added `tools/qa/cdp-check.mjs` (zero-dependency DevTools-protocol check) outside the story's files
 **Test Evidence**: Logic: test waived at `qa.level: minimal`; `node tools/qa/cdp-check.mjs` 38/38 PASS, log + 3 screenshots in `production/qa/evidence/input-and-movement/`
 **Code Review**: Skipped — solo mode

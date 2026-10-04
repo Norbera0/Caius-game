@@ -57,7 +57,33 @@ const CONFIG = {
   viewDepth: 60,            // farthest z drawn
   dogZ: 0.32,               // dog depth; ~0.84 of screen height with defaults
   dogSizeRatio: 0.72,       // dog height as a fraction of a lane width at its depth
-  baseSpeed: 9,             // forward speed, z units per second
+  // Near the dog the ground moves at about (H - horizon) * K * s(dogZ)^2 * speed px/s,
+  // so K * speed ~ 2.5 is roughly 800 px/s on a 844 px tall phone.
+  baseSpeed: 2.5,           // forward speed at run start, z units per second
+  maxSpeed: 4.8,            // speed cap (keeps >1 s of clear warning at the top speed)
+  speedRamp: 0.0256,        // speed gained per second survived (cap reached after ~90 s)
+  strideRate: 14,           // dog stride, radians per second at base speed
+  // --- obstacles & spawner (story 003) ---
+  firstRowAhead: 9,         // z distance of the first obstacle row at run start (~3 s)
+  spawnAhead: 13,           // rows are generated this far ahead (scale ~0.07, >2 s warning at max speed)
+  fadeInDepth: 2,           // obstacles fade in over this much depth after spawning
+  despawnBehind: -0.3,      // obstacles are removed once this far behind the camera plane
+  rowGapTimeStart: 1.4,     // seconds between rows at difficulty 0
+  rowGapTimeMin: 0.85,      // seconds between rows at difficulty 1
+  rowSafetyMargin: 0.2,     // reaction slack added to the slide/jump time a gap must allow
+  laneReach: 1,             // lanes a player is guaranteed to move between two rows
+  rowCountOdds: {           // P(1, 2, 3 obstacles in a row), blended by difficulty
+    start: [0.75, 0.25, 0.0],
+    end: [0.25, 0.55, 0.20],
+  },
+  crateShare: 0.5,          // chance an obstacle is a crate (else log or cone)
+  dogDepth: 0.2,            // dog hitbox depth, z units
+  dogHalfWidth: 0.28,       // dog hitbox half width, lane widths
+  obstacleTypes: {          // w, h in lane widths; d in z units; low = can be jumped
+    crate: { w: 0.78, h: 1.25, d: 0.32, low: false },
+    log: { w: 0.86, h: 0.34, d: 0.22, low: true },
+    cone: { w: 0.42, h: 0.46, d: 0.18, low: true },
+  },
   maxDt: 0.05,              // delta-time clamp (seconds)
   laneSlideTime: 0.12,      // seconds for one lane change (eased)
   jumpHeight: 0.85,         // peak jump height, in lane widths
@@ -81,6 +107,16 @@ const CONFIG = {
     dogFeather: "#e68f3f",
     dogOutline: "#7a3410",
     dogPad: "#5a2a12",
+    crate: "#e0a052",
+    crateTop: "#f2c27f",
+    crateDark: "#9c5f2a",
+    log: "#a8642f",
+    logEnd: "#e9be7c",
+    logRing: "#b77a3e",
+    cone: "#ff7a2f",
+    coneStripe: "#fff6e8",
+    coneBase: "#d85c1a",
+    obstacleOutline: "#5b3415",
   },
 };
 
@@ -94,20 +130,47 @@ const ctx = canvas.getContext("2d");
 /** Layout recomputed on every resize; all drawing reads from here. */
 const view = { w: 0, h: 0, dpr: 1, vx: 0, horizonY: 0, laneW: 0 };
 
-/** Run state. `speed` is the single variable that drives all scrolling. */
-const state = {
-  speed: CONFIG.baseSpeed,
-  scroll: 0,      // total z distance travelled, wraps visually via modulo
-  runPhase: 0,    // drives the placeholder dog's stride
-  lane: CONFIG.startLane,     // target lane (logical, always an integer)
-  laneVis: CONFIG.startLane,  // drawn lane position (float while sliding)
-  slideFrom: CONFIG.startLane,
-  slideT: 1,                  // slide progress 0..1; 1 = not sliding
-  queue: [],                  // buffered lane moves (-1 / +1)
-  grounded: true,
-  jumpT: 0,                   // seconds since take-off
-  jumpY: 0,                   // height above ground, in lane widths
+/** Run state. `speed` is the single variable that drives all scrolling. Filled by resetRun(). */
+const state = {};
+
+/** Debug switches from the URL: ?speed=N fixes the speed, ?seed=N fixes the spawner, ?nospawn disables it. */
+const params = new URLSearchParams(location.search);
+const debug = {
+  speed: parseFloat(params.get("speed")),
+  seed: parseInt(params.get("seed"), 10),
+  noSpawn: params.has("nospawn"),
 };
+
+/**
+ * Put every run field back to its start value. Called at boot and on every retry,
+ * so a restart can never inherit state from the previous run.
+ * @param {number} [seed] spawner seed; random when omitted
+ */
+function resetRun(seed) {
+  const s = Number.isFinite(seed) ? seed : (Math.random() * 2 ** 32) >>> 0;
+  Object.assign(state, {
+    running: true,
+    crashed: false,
+    time: 0,                    // seconds survived
+    speed: Number.isFinite(debug.speed) ? debug.speed : CONFIG.baseSpeed,
+    scroll: 0,                  // total z distance travelled
+    runPhase: 0,                // drives the dog's stride
+    lane: CONFIG.startLane,     // target lane (logical, always an integer)
+    laneVis: CONFIG.startLane,  // drawn lane position (float while sliding)
+    slideFrom: CONFIG.startLane,
+    slideT: 1,                  // slide progress 0..1; 1 = not sliding
+    queue: [],                  // buffered lane moves (-1 / +1)
+    grounded: true,
+    jumpT: 0,                   // seconds since take-off
+    jumpY: 0,                   // height above ground, in lane widths
+    seed: s,
+    rng: mulberry32(s),
+    spawnEnabled: !debug.noSpawn,
+    obstacles: [],              // { type, lane, wz } — wz = world distance along the track
+    nextRowWz: CONFIG.firstRowAhead,
+    prevPassable: allLanes(),   // lanes open in the last spawned row (all, at start)
+  });
+}
 
 
 /* ==========================================================================
@@ -137,6 +200,11 @@ function project(laneX, z) {
 /** Lane index (0..lanes-1) to lane-space x. */
 function laneToX(lane) {
   return lane - (CONFIG.lanes - 1) / 2;
+}
+
+/** [0, 1, ..., lanes-1] */
+function allLanes() {
+  return Array.from({ length: CONFIG.lanes }, (_, i) => i);
 }
 
 
@@ -314,12 +382,122 @@ function drawDog(lane, z) {
   ctx.stroke();
 }
 
-/** Draw one full frame. */
+/** Rounded-rect path helper (fill/stroke by caller). */
+function roundRectPath(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, Math.min(r, w / 2, h / 2));
+}
+
+/** Tall crate centred on depth z: front face plus a top face receding toward the horizon. */
+function drawCrate(lane, z) {
+  const C = CONFIG.colors, T = CONFIG.obstacleTypes.crate;
+  const p = project(laneToX(lane), Math.max(0, z - T.d / 2)), f = project(laneToX(lane), z + T.d / 2);
+  const u = view.laneW * p.s, uf = view.laneW * f.s;
+  const w = T.w * u, h = T.h * u, wf = T.w * uf, hf = T.h * uf;
+  ctx.lineWidth = Math.max(1.2, u * 0.03);
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = C.obstacleOutline;
+  // top face
+  fillQuad([p.x - w / 2, p.y - h], [p.x + w / 2, p.y - h], [f.x + wf / 2, f.y - hf], [f.x - wf / 2, f.y - hf], C.crateTop);
+  ctx.stroke();
+  // front face
+  roundRectPath(p.x - w / 2, p.y - h, w, h, u * 0.05);
+  ctx.fillStyle = C.crate;
+  ctx.fill();
+  ctx.stroke();
+  // planks + brace
+  ctx.strokeStyle = C.crateDark;
+  ctx.lineWidth = Math.max(1, u * 0.025);
+  const inset = w * 0.1;
+  ctx.strokeRect(p.x - w / 2 + inset, p.y - h + inset, w - inset * 2, h - inset * 2);
+  ctx.beginPath();
+  ctx.moveTo(p.x - w / 2 + inset, p.y - inset);
+  ctx.lineTo(p.x + w / 2 - inset, p.y - h + inset);
+  ctx.stroke();
+}
+
+/** Low log lying across the lane. */
+function drawLog(lane, z) {
+  const C = CONFIG.colors, T = CONFIG.obstacleTypes.log;
+  const p = project(laneToX(lane), z);
+  const u = view.laneW * p.s;
+  const w = T.w * u, h = T.h * u;
+  ctx.lineWidth = Math.max(1.2, u * 0.03);
+  ctx.strokeStyle = C.obstacleOutline;
+  roundRectPath(p.x - w / 2, p.y - h, w, h, h / 2);
+  ctx.fillStyle = C.log;
+  ctx.fill();
+  ctx.stroke();
+  // bark lines
+  ctx.strokeStyle = C.logRing;
+  ctx.beginPath();
+  ctx.moveTo(p.x - w * 0.3, p.y - h * 0.62);
+  ctx.lineTo(p.x + w * 0.1, p.y - h * 0.62);
+  ctx.moveTo(p.x - w * 0.1, p.y - h * 0.34);
+  ctx.lineTo(p.x + w * 0.25, p.y - h * 0.34);
+  ctx.stroke();
+  // cut end
+  ctx.strokeStyle = C.obstacleOutline;
+  ctx.fillStyle = C.logEnd;
+  ctx.beginPath();
+  ctx.ellipse(p.x + w / 2 - h * 0.45, p.y - h / 2, h * 0.36, h * 0.47, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.strokeStyle = C.logRing;
+  ctx.beginPath();
+  ctx.ellipse(p.x + w / 2 - h * 0.45, p.y - h / 2, h * 0.17, h * 0.23, 0, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
+/** Traffic cone. */
+function drawCone(lane, z) {
+  const C = CONFIG.colors, T = CONFIG.obstacleTypes.cone;
+  const p = project(laneToX(lane), z);
+  const u = view.laneW * p.s;
+  const w = T.w * u, h = T.h * u;
+  ctx.lineWidth = Math.max(1.2, u * 0.03);
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = C.obstacleOutline;
+  roundRectPath(p.x - w * 0.62, p.y - h * 0.12, w * 1.24, h * 0.14, h * 0.05);
+  ctx.fillStyle = C.coneBase;
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = C.cone;
+  ctx.beginPath();
+  ctx.moveTo(p.x - w / 2, p.y - h * 0.1);
+  ctx.lineTo(p.x - w * 0.08, p.y - h);
+  ctx.lineTo(p.x + w * 0.08, p.y - h);
+  ctx.lineTo(p.x + w / 2, p.y - h * 0.1);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = C.coneStripe;
+  ctx.beginPath();
+  ctx.moveTo(p.x - w * 0.33, p.y - h * 0.4);
+  ctx.lineTo(p.x - w * 0.22, p.y - h * 0.66);
+  ctx.lineTo(p.x + w * 0.22, p.y - h * 0.66);
+  ctx.lineTo(p.x + w * 0.33, p.y - h * 0.4);
+  ctx.closePath();
+  ctx.fill();
+}
+
+const OBSTACLE_DRAW = { crate: drawCrate, log: drawLog, cone: drawCone };
+
+/** Draw one full frame. World objects are painted far to near. */
 function render() {
   drawBackdrop();
   drawGrassBands();
   drawRoad();
-  drawDog(state.laneVis, CONFIG.dogZ);
+  const items = [];
+  for (const o of state.obstacles) {
+    const z = o.wz - state.scroll;
+    if (z <= 0 || z >= CONFIG.viewDepth) continue;
+    const alpha = Math.max(0, Math.min(1, (CONFIG.spawnAhead - z) / CONFIG.fadeInDepth));
+    items.push({ z, draw: () => { ctx.globalAlpha = alpha; OBSTACLE_DRAW[o.type](o.lane, z); ctx.globalAlpha = 1; } });
+  }
+  items.push({ z: CONFIG.dogZ, draw: () => drawDog(state.laneVis, CONFIG.dogZ) });
+  items.sort((a, b) => b.z - a.z);
+  for (const it of items) it.draw();
 }
 
 
@@ -492,13 +670,171 @@ function updateMovement(dt) {
 /* ==========================================================================
    6. SPAWNING — story 003 (obstacles) and story 005 (treats)
    ========================================================================== */
-function updateSpawning(dt) { /* stories 003, 005 */ }
+/*
+ * Fairness model. Obstacles come in rows. A lane is "passable" in a row if it is
+ * empty or holds only a low (jumpable) obstacle. A row is accepted only if:
+ *   1. it has at least one passable lane (never 3 crates), and
+ *   2. EVERY passable lane of the previous row is within CONFIG.laneReach of a
+ *      passable lane of this row — wherever the player went, a way on exists.
+ * Row spacing in time is never below one slide or one jump plus reaction margin,
+ * so the player always has time to make the move the rule assumes.
+ */
+
+/** Small seedable PRNG (mulberry32) so runs and the fairness check are reproducible. */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Current forward speed for a run time, unless a debug speed is fixed. */
+function speedAt(t) {
+  return Math.min(CONFIG.maxSpeed, CONFIG.baseSpeed + CONFIG.speedRamp * t);
+}
+
+/** Difficulty 0..1 from the current speed. */
+function difficulty(speed) {
+  return Math.max(0, Math.min(1, (speed - CONFIG.baseSpeed) / (CONFIG.maxSpeed - CONFIG.baseSpeed)));
+}
+
+/** Shortest safe time between rows: one jump or the lane moves the rule assumes, plus margin. */
+function minSafeGapTime() {
+  return Math.max(CONFIG.jumpAirtime, CONFIG.laneSlideTime * CONFIG.laneReach) + CONFIG.rowSafetyMargin;
+}
+
+/** Seconds between rows at a difficulty (denser as difficulty rises, never below the safe gap). */
+function rowGapTime(d) {
+  const t = CONFIG.rowGapTimeStart + (CONFIG.rowGapTimeMin - CONFIG.rowGapTimeStart) * d;
+  return Math.max(t, minSafeGapTime());
+}
+
+/** Lanes of a row that can be passed (empty or low obstacle). */
+function passableLanes(row) {
+  return row.map((t, i) => (t === null || CONFIG.obstacleTypes[t].low ? i : -1)).filter((i) => i >= 0);
+}
+
+/** Fairness rule (see model above). */
+function isRowFair(prevPassable, row) {
+  const pass = passableLanes(row);
+  if (pass.length === 0) return false;
+  return prevPassable.every((p) => pass.some((q) => Math.abs(p - q) <= CONFIG.laneReach));
+}
+
+/**
+ * Generate one obstacle row. Pure given the rng.
+ * @param {number[]} prevPassable passable lanes of the previous row
+ * @param {number} d difficulty 0..1
+ * @param {() => number} rng
+ * @returns {(string|null)[]} obstacle type per lane, null = empty
+ */
+function generateRow(prevPassable, d, rng) {
+  const { start, end } = CONFIG.rowCountOdds;
+  const odds = start.map((v, i) => v + (end[i] - v) * d);
+  for (let attempt = 0; attempt < 30; attempt++) {
+    let r = rng(), count = 1;
+    for (let i = 0; i < odds.length; i++) { if (r < odds[i]) { count = i + 1; break; } r -= odds[i]; }
+    const order = allLanes();
+    for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+    const row = allLanes().map(() => null);
+    for (let i = 0; i < count; i++) row[order[i]] = rng() < CONFIG.crateShare ? "crate" : (rng() < 0.5 ? "log" : "cone");
+    if (isRowFair(prevPassable, row)) return row;
+  }
+  return allLanes().map(() => null); // an empty row is always fair
+}
+
+/** Spawn rows up to CONFIG.spawnAhead and drop obstacles that passed the camera. */
+function updateSpawning() {
+  if (state.spawnEnabled) {
+    while (state.nextRowWz < state.scroll + CONFIG.spawnAhead) {
+      const d = difficulty(state.speed);
+      const row = generateRow(state.prevPassable, d, state.rng);
+      row.forEach((type, lane) => { if (type) state.obstacles.push({ type, lane, wz: state.nextRowWz }); });
+      state.prevPassable = passableLanes(row);
+      state.nextRowWz += state.speed * rowGapTime(d);
+    }
+  }
+  state.obstacles = state.obstacles.filter((o) => o.wz - state.scroll > CONFIG.despawnBehind);
+}
+
+/**
+ * Self-check: generate many rows and confirm a path always exists.
+ * @returns {{rows:number, ok:boolean, failures:string[]}}
+ */
+function fairnessSelfTest(rows = 20000, seed = 1) {
+  const rng = mulberry32(seed);
+  const failures = [];
+  for (const d of [0, 0.5, 1]) {
+    let prev = allLanes(), reach = allLanes();
+    for (let i = 0; i < rows; i++) {
+      const row = generateRow(prev, d, rng);
+      const pass = passableLanes(row);
+      if (row.every((t) => t === "crate")) failures.push(`d=${d} row ${i}: all crates`);
+      // Independent check: lanes reachable by a player who started anywhere.
+      reach = pass.filter((q) => reach.some((p) => Math.abs(p - q) <= CONFIG.laneReach));
+      if (reach.length === 0) failures.push(`d=${d} row ${i}: no reachable lane`);
+      prev = pass;
+    }
+  }
+  if (rowGapTime(1) < minSafeGapTime()) failures.push("row gap below safe minimum");
+  for (const t of Object.keys(CONFIG.obstacleTypes)) {
+    if (CONFIG.obstacleTypes[t].low && !canClearLow(t, CONFIG.maxSpeed)) failures.push(`${t} not clearable at maxSpeed`);
+    if (!CONFIG.obstacleTypes[t].low && CONFIG.obstacleTypes[t].h <= CONFIG.jumpHeight) failures.push(`${t} is jumpable but not marked low`);
+  }
+  return { rows: rows * 3, ok: failures.length === 0, failures: failures.slice(0, 10) };
+}
 
 
 /* ==========================================================================
-   7. COLLISION — story 003
+   7. COLLISION
    ========================================================================== */
-function updateCollision() { /* story 003 */ }
+
+/**
+ * Does the dog overlap an obstacle? Pure.
+ * @param {string} type obstacle type
+ * @param {number} obLane obstacle lane
+ * @param {number} obZ obstacle depth (z) relative to the camera
+ * @param {number} dogLane dog lane position (float while sliding)
+ * @param {number} dogY dog height above ground, lane widths
+ */
+function hitTest(type, obLane, obZ, dogLane, dogY) {
+  const T = CONFIG.obstacleTypes[type];
+  if (Math.abs(obZ - CONFIG.dogZ) > (T.d + CONFIG.dogDepth) / 2) return false;
+  if (Math.abs(dogLane - obLane) >= CONFIG.dogHalfWidth + T.w / 2) return false;
+  return dogY < T.h;
+}
+
+/**
+ * Can a jump clear a low obstacle at this speed? The dog stays above height h for
+ * T·sqrt(1 − h/H) seconds; that must exceed the overlap time plus 0.1 s of timing slack.
+ */
+function canClearLow(type, speed) {
+  const T = CONFIG.obstacleTypes[type];
+  if (T.h >= CONFIG.jumpHeight) return false;
+  const above = CONFIG.jumpAirtime * Math.sqrt(1 - T.h / CONFIG.jumpHeight);
+  const overlap = (T.d + CONFIG.dogDepth) / speed;
+  return above > overlap + 0.1;
+}
+
+/** Hooks for other systems (screens, juice). */
+const events = { onCrash: [] };
+
+/** End the run on the first hit. */
+function updateCollision() {
+  for (const o of state.obstacles) {
+    if (hitTest(o.type, o.lane, o.wz - state.scroll, state.laneVis, state.jumpY)) {
+      state.running = false;
+      state.crashed = true;
+      state.crashedOn = o.type;
+      for (const fn of events.onCrash) fn(o);
+      return;
+    }
+  }
+}
 
 
 /* ==========================================================================
@@ -514,10 +850,13 @@ let lastTime = null;
 
 /** Advance the simulation by dt seconds. */
 function update(dt) {
+  if (!state.running) return;
+  state.time += dt;
+  if (!Number.isFinite(debug.speed)) state.speed = speedAt(state.time);
   state.scroll += state.speed * dt;
-  state.runPhase += state.speed * dt * 1.6;
+  state.runPhase += dt * CONFIG.strideRate * Math.sqrt(state.speed / CONFIG.baseSpeed);
   updateMovement(dt);
-  updateSpawning(dt);
+  updateSpawning();
   updateCollision();
 }
 
@@ -537,10 +876,13 @@ document.addEventListener("visibilitychange", () => { lastTime = null; });
 /* ==========================================================================
    10. BOOT
    ========================================================================== */
-// Debug: ?speed=N overrides the forward speed (verifies the single speed variable).
-const speedParam = parseFloat(new URLSearchParams(location.search).get("speed"));
-if (Number.isFinite(speedParam)) state.speed = speedParam;
-window.CaiusRun = { CONFIG, state, view, project, classifyGesture, moveLane, jump, jumpGravity, jumpAirDistance };
+resetRun(debug.seed);
+// Exposed for debugging and tools/qa checks.
+window.CaiusRun = {
+  CONFIG, state, view, events, project, classifyGesture, moveLane, jump, jumpGravity, jumpAirDistance,
+  resetRun, generateRow, isRowFair, passableLanes, fairnessSelfTest, hitTest, canClearLow, speedAt,
+  rowGapTime, minSafeGapTime, mulberry32,
+};
 
 window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", resize);

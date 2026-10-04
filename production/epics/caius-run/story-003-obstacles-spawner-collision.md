@@ -1,12 +1,12 @@
 # Story 003: Obstacles, spawner, speed ramp and collision
 
 > **Epic**: Caius Run
-> **Status**: Ready
+> **Status**: Complete
 > **Layer**: Core
 > **Type**: Logic
 > **Estimate**: L
 > **Manifest Version**: N/A (minimal — no control manifest)
-> **Last Updated**: [set by /dev-story when implementation begins]
+> **Last Updated**: 2026-10-05
 
 ## Context
 
@@ -28,14 +28,14 @@
 
 *From `design/game-brief.md` (the **Player goal & fail state** field + the MVP feature this story implements), scoped to this story:*
 
-- [ ] Crates are tall and fill one lane; jumping does not clear them, so the dog must switch lanes.
-- [ ] Logs and cones are low; a jump at the right time clears them, running into one grounded is a hit.
-- [ ] Obstacles spawn at the horizon, move toward the camera at current speed, scale up through the projection function, and despawn once behind the camera.
-- [ ] Spawner works in rows. Every row leaves at least one lane passable (clear, or low obstacle only); a row never has crates in all 3 lanes.
-- [ ] Reachability: each row's passable lane is within one lane of a passable lane in the previous row, and row spacing in time is at least lane-slide time + margin, so a path always exists.
-- [ ] Speed ramps up gradually from a base value to a cap; obstacle density rises with time survived (shorter gaps, more obstacles per row) without breaking the fairness rules.
-- [ ] Collision between Caius (lane, depth, height) and an obstacle triggers a single `onCrash` event; the run state stops advancing.
-- [ ] A crash is never unfair: a self-check generating thousands of rows at max difficulty finds a valid path every time.
+- [x] Crates are tall and fill one lane; jumping does not clear them, so the dog must switch lanes.
+- [x] Logs and cones are low; a jump at the right time clears them, running into one grounded is a hit.
+- [x] Obstacles spawn at the horizon, move toward the camera at current speed, scale up through the projection function, and despawn once behind the camera.
+- [x] Spawner works in rows. Every row leaves at least one lane passable (clear, or low obstacle only); a row never has crates in all 3 lanes.
+- [x] Reachability: each row's passable lane is within one lane of a passable lane in the previous row, and row spacing in time is at least lane-slide time + margin, so a path always exists.
+- [x] Speed ramps up gradually from a base value to a cap; obstacle density rises with time survived (shorter gaps, more obstacles per row) without breaking the fairness rules.
+- [x] Collision between Caius (lane, depth, height) and an obstacle triggers a single `onCrash` event; the run state stops advancing.
+- [x] A crash is never unfair: a self-check generating thousands of rows at max difficulty finds a valid path every time.
 
 ---
 
@@ -80,3 +80,12 @@
 
 - Depends on: Story 001, Story 002
 - Unlocks: Story 004, Story 005, Story 006
+
+---
+
+## Completion Notes
+**Completed**: 2026-10-05
+**Criteria**: 8/8 passing
+**Deviations**: Advisory — retuned story 001/002 values so obstacles are readable in time: speed now 2.5 → 4.8 z/s (was a fixed 9, which gave ~0.3 s of warning), stride decoupled from speed. Crate drawing is centred on its hitbox depth.
+**Test Evidence**: Logic: test waived at `qa.level: minimal`; `node tools/qa/cdp-check.mjs obstacles-spawner-collision` 26/26 PASS (fairness self-test over 120,000 generated rows, hit tests, live jump-over at base and max speed, live crash). Log + 3 screenshots in `production/qa/evidence/obstacles-spawner-collision/`. Also closes story 002's deferred "jump clears a low obstacle" criterion.
+**Code Review**: Skipped — solo mode
