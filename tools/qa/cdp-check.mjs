@@ -79,8 +79,8 @@ async function swipe(dx, dy, steps = 4) {
   for (let i = 1; i <= steps; i++) { await touch("touchMove", 195 + (dx * i) / steps, 600 + (dy * i) / steps); await sleep(8); }
   await touch("touchEnd");
 }
-const shot = async (name) => {
-  const r = await send("Page.captureScreenshot", { format: "png" });
+const shot = async (name, clip) => {
+  const r = await send("Page.captureScreenshot", clip ? { format: "png", clip: { scale: 1, ...clip } } : { format: "png" });
   writeFileSync(join(EVID, name), Buffer.from(r.data, "base64"));
 };
 
@@ -101,6 +101,7 @@ try {
   if (want("obstacles-spawner-collision")) await suiteObstacles();
   if (want("score-and-screens")) await suiteScreens();
   if (want("treats")) await suiteTreats();
+  if (want("caius-art-and-park-scenery")) await suiteArt();
 } catch (e) {
   check("harness ran without error", false, String(e.stack || e));
 } finally {
@@ -417,4 +418,41 @@ async function suiteTreats() {
   await open("?seed=5&nospawn");
   await ev(`(() => { const R = window.CaiusRun, s = R.state; s.spawnEnabled = true; })()`);
   await sleep(2400); await shot("03-run-with-bones.png");
+}
+
+async function suiteArt() {
+  console.log("\n== caius-art-and-park-scenery ==");
+  evidenceDir("caius-art-and-park-scenery");
+  // Dog close-up: feet at (195, ~709) on a 390x844 view.
+  const dogClip = { x: 115, y: 545, width: 160, height: 185, scale: 3 };
+  await open("?seed=3", { title: true });
+  await sleep(700);
+  await shot("01-title-look-back.png");
+  await shot("02-title-look-back-closeup.png", dogClip);
+  await key("Enter"); await sleep(200);
+  await ev("window.CaiusRun.state.spawnEnabled = false; window.CaiusRun.state.obstacles = []; window.CaiusRun.state.treats = []");
+  await sleep(1500);
+  await shot("03-running.png");
+  const frames = [];
+  for (let i = 0; i < 4; i++) { await shot(`04-run-cycle-${i + 1}.png`, dogClip); frames.push(i); await sleep(70); }
+  await key("ArrowRight"); await sleep(45);
+  const tilt = await ev("window.CaiusRun.state.tilt");
+  await shot("05-lean-right.png", { x: 150, y: 545, width: 200, height: 185, scale: 3 });
+  check("Caius leans into a lane change (right slide = positive lean)", tilt > 0.08, `tilt ${tilt.toFixed(3)} rad`);
+  await sleep(500);
+  const tilt2 = await ev("window.CaiusRun.state.tilt");
+  check("lean settles back upright after the slide", Math.abs(tilt2) < 0.02, `tilt ${tilt2.toFixed(3)} rad`);
+  await key("ArrowLeft"); await sleep(400);
+  await key("Space"); await sleep(260);
+  await shot("06-jump-pose.png", { x: 115, y: 430, width: 160, height: 300, scale: 3 });
+  await sleep(600);
+  await ev("window.CaiusRun.state.spawnEnabled = true");
+  await sleep(2500);
+  await shot("07-park-with-obstacles.png");
+  const fps = await ev("new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else r(n); }; requestAnimationFrame(f); })");
+  check("60 fps held with scenery, dog art and obstacles (headless desktop CPU)", fps >= 55, `${fps} frames in 1 s`);
+  const cost = await ev(`(() => { const R = window.CaiusRun; const t0 = performance.now(); for (let i = 0; i < 200; i++) R._render(); return (performance.now() - t0) / 200; })()`);
+  check("one full frame renders in < 4 ms (desktop; phone budget 16.7 ms)", cost < 4, `${cost.toFixed(2)} ms/frame`);
+  const ext = await ev("JSON.stringify({ imgs: document.images.length, links: document.querySelectorAll('link,script[src]').length, res: performance.getEntriesByType('resource').length })").then(JSON.parse);
+  check("no external images, scripts, styles or network requests", ext.imgs === 0 && ext.links === 0 && ext.res === 0, JSON.stringify(ext));
 }

@@ -61,7 +61,12 @@ const CONFIG = {
   roadHalfWidthMaxRatio: 0.36, // ...capped to this fraction of screen height (landscape)
   viewDepth: 60,            // farthest z drawn
   dogZ: 0.32,               // dog depth; ~0.84 of screen height with defaults
-  dogSizeRatio: 0.72,       // dog height as a fraction of a lane width at its depth
+  dogHeight: 1.08,          // drawn dog height (ears to paws), lane widths
+  tiltPerLaneSpeed: 0.025,  // lean (radians) per lane/second of sideways speed
+  tiltMax: 0.3,             // lean cap, radians
+  titleDogScale: 1.6,       // Caius is drawn larger on the Title screen
+  sceneryPeriod: 0.55,      // z between scenery slots on each side
+  sceneryDepth: 16,         // scenery drawn up to this depth
   // Near the dog the ground moves at about (H - horizon) * K * s(dogZ)^2 * speed px/s,
   // so K * speed ~ 2.5 is roughly 800 px/s on a 844 px tall phone.
   baseSpeed: 2.5,           // forward speed at run start, z units per second
@@ -136,10 +141,28 @@ const CONFIG = {
     road: "#f4cb8e",
     roadEdge: "#dd9f5e",
     marking: "#fff9ea",
-    dogBody: "#c8621f",
-    dogFeather: "#e68f3f",
-    dogOutline: "#7a3410",
-    dogPad: "#5a2a12",
+    dogBody: "#c4622d",
+    dogFeather: "#e3955a",
+    dogOutline: "#6b2e12",
+    dogPad: "#4a2414",
+    dogShade: "#a9501f",
+    dogEar: "#b9561f",
+    tongue: "#ee8a9b",
+    nose: "#3b1d10",
+    eye: "#2b140a",
+    trunk: "#9a6236",
+    treeA: "#5cb850",
+    treeB: "#4caa47",
+    treeLight: "#7fd46b",
+    treeOutline: "#2f7a33",
+    bush: "#62c157",
+    flowerA: "#ff9fb7",
+    flowerB: "#fff3a6",
+    flowerC: "#ffffff",
+    bench: "#cf8642",
+    benchLeg: "#7d4a22",
+    sun: "#fff3b0",
+    farTrees: "#62b65a",
     crate: "#e0a052",
     crateTop: "#f2c27f",
     crateDark: "#9c5f2a",
@@ -207,6 +230,9 @@ function resetRun(seed) {
     grounded: true,
     jumpT: 0,                   // seconds since take-off
     jumpY: 0,                   // height above ground, in lane widths
+    tilt: 0,                    // lean into lane changes, radians
+    squashX: 1,                 // landing squash (story 007)
+    squashY: 1,
     treatPoints: 0,             // bonus points from treats
     treatCount: 0,              // bones collected this run
     treats: [],                 // { lane, wz } bones not yet collected
@@ -310,8 +336,135 @@ function drawBackdrop() {
   g.addColorStop(1, C.skyBottom);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, view.w, view.horizonY + 1);
+  drawSkyDetails(performance.now());
   ctx.fillStyle = C.grassA;
   ctx.fillRect(0, view.horizonY, view.w, view.h - view.horizonY);
+}
+
+/** Deterministic 0..1 hash, so scenery is stable without storing it. */
+function hash01(n) {
+  const x = Math.sin(n * 127.1 + 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+/** Park props beside the path, generated from their slot index (infinite, no state). */
+function sceneryItems() {
+  const P = CONFIG.sceneryPeriod;
+  const first = Math.floor(state.scroll / P) - 1;
+  const n = Math.ceil(CONFIG.sceneryDepth / P) + 2;
+  const out = [];
+  for (let k = first; k < first + n; k++) {
+    for (const side of [-1, 1]) {
+      const h = hash01(k * 2 + (side > 0 ? 1 : 0));
+      const z = k * P + h * P * 0.6 - state.scroll;
+      if (z <= 0.02 || z > CONFIG.sceneryDepth) continue;
+      const type = h < 0.4 ? "tree" : h < 0.7 ? "bush" : h < 0.84 ? "bench" : "flowers";
+      const spread = type === "tree" ? 2.4 : type === "bench" ? 0.2 : 1.3;
+      const off = (type === "bench" ? 0.35 : 0.55) + hash01(k * 7.3 + side * 3.1) * spread;
+      out.push({ type, x: side * (CONFIG.lanes / 2 + off), z, side, h });
+    }
+  }
+  return out;
+}
+
+function drawTree(x, z, h) {
+  const C = CONFIG.colors;
+  const p = project(x, z), u = view.laneW * p.s;
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = C.treeOutline;
+  ctx.lineWidth = Math.max(1, u * 0.04);
+  ctx.fillStyle = C.trunk;
+  roundRectPath(p.x - u * 0.09, p.y - u * 1.05, u * 0.18, u * 1.05, u * 0.05);
+  ctx.fill(); ctx.stroke();
+  const big = 0.85 + h * 0.4;
+  const blobs = [[0, -1.75, 0.62], [-0.45, -1.35, 0.46], [0.45, -1.35, 0.46], [0.05, -2.2, 0.45]];
+  const canopy = new Path2D();
+  for (const [bx, by, r] of blobs) { canopy.moveTo(p.x + (bx + r) * u * big, p.y + by * u * big); canopy.arc(p.x + bx * u * big, p.y + by * u * big, r * u * big, 0, Math.PI * 2); }
+  ctx.lineWidth = Math.max(1.5, u * 0.08);
+  ctx.stroke(canopy);
+  ctx.fillStyle = h < 0.2 ? C.treeA : C.treeB;
+  ctx.fill(canopy);
+  ctx.fillStyle = C.treeLight;
+  ctx.beginPath(); ctx.arc(p.x - 0.2 * u * big, p.y - 1.95 * u * big, 0.22 * u * big, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawBush(x, z, h) {
+  const C = CONFIG.colors;
+  const p = project(x, z), u = view.laneW * p.s * (0.8 + h * 0.4);
+  const bush = new Path2D();
+  for (const [bx, by, r] of [[-0.3, -0.28, 0.3], [0.3, -0.28, 0.3], [0, -0.45, 0.36]]) { bush.moveTo(p.x + (bx + r) * u, p.y + by * u); bush.arc(p.x + bx * u, p.y + by * u, r * u, 0, Math.PI * 2); }
+  ctx.lineWidth = Math.max(1.5, u * 0.07);
+  ctx.strokeStyle = C.treeOutline;
+  ctx.stroke(bush);
+  ctx.fillStyle = C.bush;
+  ctx.fill(bush);
+  ctx.fillStyle = h > 0.55 ? C.flowerA : C.flowerB;
+  for (const [fx, fy] of [[-0.3, -0.35], [0.12, -0.6], [0.32, -0.25]]) { ctx.beginPath(); ctx.arc(p.x + fx * u, p.y + fy * u, 0.05 * u, 0, Math.PI * 2); ctx.fill(); }
+}
+
+function drawBench(x, z, side) {
+  const C = CONFIG.colors;
+  const p = project(x, z), u = view.laneW * p.s;
+  const w = 0.95 * u;
+  ctx.lineWidth = Math.max(1, u * 0.03);
+  ctx.strokeStyle = C.obstacleOutline;
+  ctx.fillStyle = C.benchLeg;
+  for (const lx of [-0.38, 0.38]) { ctx.fillRect(p.x + lx * u - u * 0.03, p.y - u * 0.4, u * 0.06, u * 0.4); }
+  ctx.fillStyle = C.bench;
+  roundRectPath(p.x - w / 2, p.y - u * 0.46, w, u * 0.1, u * 0.03); ctx.fill(); ctx.stroke();
+  const bx = p.x + side * u * 0.06;
+  roundRectPath(bx - w / 2, p.y - u * 0.78, w, u * 0.09, u * 0.03); ctx.fill(); ctx.stroke();
+  roundRectPath(bx - w / 2, p.y - u * 0.64, w, u * 0.09, u * 0.03); ctx.fill(); ctx.stroke();
+}
+
+function drawFlowers(x, z, h) {
+  const C = CONFIG.colors;
+  const p = project(x, z), u = view.laneW * p.s;
+  const cols = [C.flowerA, C.flowerB, C.flowerC];
+  for (let i = 0; i < 6; i++) {
+    const fx = (hash01(h * 50 + i) - 0.5) * 0.8, fy = -hash01(h * 70 + i) * 0.12;
+    ctx.fillStyle = cols[i % 3];
+    ctx.beginPath(); ctx.arc(p.x + fx * u, p.y + fy * u - 0.05 * u, 0.06 * u, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+const SCENERY_DRAW = {
+  tree: (it) => drawTree(it.x, it.z, it.h),
+  bush: (it) => drawBush(it.x, it.z, it.h),
+  bench: (it) => drawBench(it.x, it.z, it.side),
+  flowers: (it) => drawFlowers(it.x, it.z, it.h),
+};
+
+/** Sun, drifting clouds and a distant tree line along the horizon. */
+function drawSkyDetails(now) {
+  const C = CONFIG.colors;
+  const sx = view.w * 0.84, sy = view.horizonY * 0.7, sr = Math.min(view.w, view.h) * 0.07;
+  const glow = ctx.createRadialGradient(sx, sy, sr * 0.6, sx, sy, sr * 2.6);
+  glow.addColorStop(0, "rgba(255, 244, 190, 0.7)");
+  glow.addColorStop(1, "rgba(255, 244, 190, 0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(sx - sr * 3, sy - sr * 3, sr * 6, sr * 6);
+  ctx.fillStyle = C.sun;
+  ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI * 2); ctx.fill();
+  const cu = Math.min(view.w, view.h) * 0.05;
+  for (let i = 0; i < 3; i++) {
+    const span = view.w + cu * 8;
+    const cx = ((hash01(i + 9) * span + now * 0.006 * (1 + i * 0.3)) % span) - cu * 4;
+    const cy = view.horizonY * (0.18 + 0.22 * i);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.beginPath();
+    for (const [bx, by, r] of [[-1.3, 0.2, 0.9], [0, -0.2, 1.25], [1.3, 0.2, 0.9], [0.4, 0.35, 0.8]]) { ctx.moveTo(cx + (bx + r) * cu, cy + by * cu); ctx.arc(cx + bx * cu, cy + by * cu, r * cu, 0, Math.PI * 2); }
+    ctx.fill();
+  }
+  ctx.fillStyle = C.farTrees;
+  ctx.beginPath();
+  const r0 = Math.max(8, view.h * 0.022);
+  for (let x = -r0; x < view.w + r0; x += r0 * 1.3) {
+    const r = r0 * (0.7 + hash01(Math.round(x / r0)) * 0.6);
+    ctx.moveTo(x + r, view.horizonY);
+    ctx.arc(x, view.horizonY, r, Math.PI, 0);
+  }
+  ctx.fill();
 }
 
 /** Alternating grass stripes that scroll toward the camera. */
@@ -353,87 +506,195 @@ function drawRoad() {
   }
 }
 
-/** Placeholder Caius (rear view): simple shapes, real art lands in story 006. */
-function drawDog(lane, z) {
+/**
+ * Caius, drawn from the reference sheet (ref_image/dog_1.jpg): a red golden
+ * retriever, burnt-orange coat, lighter amber feathering, dark outline, pink
+ * tongue, dark paw pads. Drawn in unit space (1 = dog height) so one set of
+ * shapes scales with depth; each silhouette is stroked at double width and
+ * then filled, which leaves a clean outline around overlapping parts.
+ * @param {number} x screen x of the feet
+ * @param {number} groundY screen y of the ground under the dog
+ * @param {number} B dog height in px
+ * @param {{phase:number, air:number, tilt:number, mode:"run"|"jump"|"look", squashX?:number, squashY?:number}} pose
+ */
+function drawCaius(x, groundY, B, pose) {
   const C = CONFIG.colors;
-  const p = project(laneToX(lane), z);
-  const B = view.laneW * p.s * CONFIG.dogSizeRatio * 1.6; // body unit
-  const ph = state.runPhase;
-  const bob = Math.sin(ph * 2) * B * 0.025;
-  const lift = (k) => state.grounded ? Math.max(0, Math.sin(ph + k * Math.PI)) * B * 0.09 : 0;
-  const lw = Math.max(1.5, B * 0.022);
-  const groundY = p.y;
-  const air = state.jumpY * view.laneW * p.s; // jump height in screen px
-  const x = p.x, y = p.y - air;
+  const ph = pose.phase;
+  const run = pose.mode === "run", jumping = pose.mode === "jump", look = pose.mode === "look";
+  const bob = run ? -Math.abs(Math.sin(ph)) * 0.035 : 0;
+  const liftL = run ? Math.max(0, Math.sin(ph)) * 0.1 : 0;
+  const liftR = run ? Math.max(0, Math.sin(ph + Math.PI)) * 0.1 : 0;
+  const flop = run ? Math.cos(ph * 2) * 0.14 : jumping ? -0.4 : Math.sin(ph * 0.5) * 0.05;
+  const wag = Math.sin(ph * (look ? 0.9 : 0.55)) * (look ? 0.35 : 0.22);
+  const lw = Math.max(1.4, B * 0.022) / B; // outline width in unit space
 
-  ctx.lineWidth = lw;
+  // ground shadow (stays on the ground while airborne)
+  const shrink = 1 / (1 + pose.air / (B * 0.9));
+  ctx.fillStyle = "rgba(60,40,10,0.2)";
+  ctx.beginPath();
+  ctx.ellipse(x, groundY, B * 0.3 * shrink, B * 0.065 * shrink, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.save();
+  ctx.translate(x, groundY - pose.air);
+  ctx.rotate(pose.tilt);
+  ctx.scale(B * (pose.squashX || 1), B * (pose.squashY || 1));
   ctx.lineJoin = "round";
+  ctx.lineCap = "round";
   ctx.strokeStyle = C.dogOutline;
 
-  // ground shadow
-  const shrink = 1 / (1 + state.jumpY * 0.8); // shadow stays on the ground, smaller when high
-  ctx.fillStyle = "rgba(60,40,10,0.18)";
-  ctx.beginPath();
-  ctx.ellipse(x, groundY, B * 0.30 * shrink, B * 0.07 * shrink, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // rear legs (alternate)
-  for (const k of [0, 1]) {
-    const lx = x + (k ? 1 : -1) * B * 0.12;
-    const ly = y - lift(k);
-    ctx.fillStyle = C.dogBody;
-    ctx.beginPath();
-    ctx.roundRect(lx - B * 0.065, ly - B * 0.30, B * 0.13, B * 0.30, B * 0.06);
-    ctx.fill();
-    ctx.stroke();
-    ctx.fillStyle = C.dogPad;
-    ctx.beginPath();
-    ctx.ellipse(lx, ly - B * 0.01, B * 0.055, B * 0.03, 0, 0, Math.PI * 2);
-    ctx.fill();
+  /** Outline-then-fill a Path2D so overlapping shapes share one outline. */
+  const solid = (path, fill, width = lw) => {
+    ctx.lineWidth = width * 2;
+    ctx.stroke(path);
+    ctx.fillStyle = fill;
+    ctx.fill(path);
+  };
+  const ellipse = (path, cx, cy, rx, ry, rot = 0) => { path.moveTo(cx + rx * Math.cos(rot), cy + rx * Math.sin(rot)); path.ellipse(cx, cy, rx, ry, rot, 0, Math.PI * 2); };
+  // --- far front legs, peeking under the belly -------------------------------
+  if (!jumping) {
+    for (const side of [-1, 1]) {
+      const lf = (side < 0 ? liftR : liftL) * 0.6;
+      const leg = new Path2D();
+      leg.roundRect(side * 0.1 - 0.035, -0.4 + bob, 0.07, 0.4 - lf - bob, 0.035);
+      solid(leg, C.dogShade);
+    }
   }
 
-  // tail, wagging
-  const wag = Math.sin(ph * 1.4) * 0.45;
-  ctx.save();
-  ctx.translate(x, y - B * 0.52 + bob);
-  ctx.rotate(wag);
+  // --- tongue (run / jump: hangs out the left side of the face) ------------------
+  if (!look) {
+    const t = new Path2D();
+    ellipse(t, -0.17, -0.82 + bob + Math.sin(ph * 2) * 0.008, 0.032, 0.06, 0.25);
+    solid(t, C.tongue, lw * 0.7);
+  }
+
+  // --- head and ears ------------------------------------------------------------------
+  const hy = -0.9 + bob * 0.6;
+  const head = new Path2D();
+  ellipse(head, 0, hy, 0.17, 0.16);
+  if (look) ellipse(head, -0.17, hy + 0.035, 0.12, 0.075, -0.08); // muzzle turned toward the camera-left
+  solid(head, C.dogBody);
+  if (look) {
+    // face: nose, smile, tongue, eye
+    ctx.fillStyle = C.dogFeather;
+    ctx.beginPath(); ctx.ellipse(-0.17, hy + 0.05, 0.085, 0.035, -0.08, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = C.nose;
+    ctx.beginPath(); ctx.ellipse(-0.282, hy + 0.012, 0.036, 0.028, -0.1, 0, Math.PI * 2); ctx.fill();
+    const tg = new Path2D();
+    tg.moveTo(-0.215, hy + 0.07);
+    tg.quadraticCurveTo(-0.225, hy + 0.16, -0.18, hy + 0.15);
+    tg.quadraticCurveTo(-0.145, hy + 0.145, -0.15, hy + 0.068);
+    tg.closePath();
+    solid(tg, C.tongue, lw * 0.7);
+    ctx.lineWidth = lw * 1.1;
+    ctx.beginPath(); ctx.moveTo(-0.27, hy + 0.05); ctx.quadraticCurveTo(-0.2, hy + 0.085, -0.115, hy + 0.055); ctx.stroke();
+    ctx.fillStyle = C.eye;
+    ctx.beginPath(); ctx.ellipse(-0.085, hy - 0.035, 0.022, 0.027, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath(); ctx.arc(-0.092, hy - 0.044, 0.008, 0, Math.PI * 2); ctx.fill();
+  }
+  for (const side of look ? [1, 0] : [-1, 1]) {
+    const ear = new Path2D();
+    if (side === 0) ellipse(ear, 0.04, hy + 0.07, 0.068, 0.12, 0.12 + flop * 0.5); // ear hanging over the cheek
+    else ellipse(ear, side * 0.17, hy + 0.06, 0.066, 0.125, side * (0.12 + flop));
+    solid(ear, C.dogEar);
+  }
+
+  // --- hind legs (behind the haunches) -----------------------------------------------
+  for (const side of [-1, 1]) {
+    const cx = side * 0.165;
+    const lift = side < 0 ? liftL : liftR;
+    const leg = new Path2D();
+    if (jumping) leg.roundRect(cx - 0.055, -0.32, 0.11, 0.16, 0.05);
+    else leg.roundRect(cx - 0.05, -0.32 + bob, 0.1, 0.32 - lift - bob, 0.05);
+    solid(leg, C.dogBody);
+    // paw: soles show when the foot is lifted or tucked
+    const soleY = jumping ? -0.16 : -lift - 0.015;
+    const open = jumping ? 1 : Math.min(1, lift / 0.06);
+    if (open > 0.15) {
+      ctx.fillStyle = C.dogPad;
+      ctx.beginPath(); ctx.ellipse(cx, soleY + 0.005, 0.042, 0.03 * open + 0.004, 0, 0, Math.PI * 2); ctx.fill();
+      for (const t of [-1, 0, 1]) { ctx.beginPath(); ctx.ellipse(cx + t * 0.03, soleY - 0.035 * open, 0.013, 0.013 * open + 0.003, 0, 0, Math.PI * 2); ctx.fill(); }
+    } else {
+      ctx.fillStyle = C.dogPad;
+      ctx.beginPath(); ctx.ellipse(cx, -0.01, 0.038, 0.011, 0, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // --- feathered "trousers": wisps hanging from the back of the haunches -------------------
+  for (const side of [-1, 1]) {
+    const f = new Path2D();
+    const x0 = side * 0.06, x1 = side * 0.29, y = -0.27 + bob;
+    f.moveTo(x0, y - 0.05);
+    for (let i = 0; i < 4; i++) {
+      const a = x0 + ((x1 - x0) * i) / 4, b = x0 + ((x1 - x0) * (i + 1)) / 4;
+      const d = 0.05 + 0.025 * Math.sin((Math.PI * (i + 0.5)) / 4);
+      f.quadraticCurveTo(a + (b - a) * 0.2, y + d, a + (b - a) * 0.55, y + d);
+      f.quadraticCurveTo(b, y + d * 0.9, b, y);
+    }
+    f.lineTo(x1, y - 0.05);
+    f.closePath();
+    solid(f, C.dogFeather, lw * 0.8);
+  }
+
+  // --- body: shoulders + rump + haunches, one silhouette ------------------------------------
+  const body = new Path2D();
+  ellipse(body, 0, -0.63 + bob, 0.2, 0.13);
+  ellipse(body, 0, -0.47 + bob, 0.28, 0.24);
+  ellipse(body, -0.165, -0.37 + bob, 0.13, 0.15);
+  ellipse(body, 0.165, -0.37 + bob, 0.13, 0.15);
+  solid(body, C.dogBody);
+  // soft lighter fur where the haunches meet the trousers
   ctx.fillStyle = C.dogFeather;
-  ctx.beginPath();
-  ctx.ellipse(0, -B * 0.16, B * 0.075, B * 0.20, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
+  for (const side of [-1, 1]) {
+    ctx.beginPath(); ctx.ellipse(side * 0.16, -0.29 + bob, 0.085, 0.03, 0, 0, Math.PI * 2); ctx.fill();
+  }
+
+  // --- tail: feathered plume, waving --------------------------------------------------------
+  // Points out to the side like the reference's running poses; feathering hangs underneath.
+  ctx.save();
+  ctx.translate(0.05, -0.6 + bob);
+  ctx.rotate((jumping ? 0.25 : look ? -0.45 : -0.2) + wag);
+  // Long "flag" of feathering hangs from the underside and sweeps back toward the body.
+  const fringe = new Path2D();
+  fringe.moveTo(0.44, -0.06);
+  const sway = Math.sin(ph * 1.1) * 0.012;
+  for (let i = 0; i < 6; i++) {
+    const x = 0.44 - i * 0.07, d = 0.035 + 0.065 * Math.sin((Math.PI * (i + 0.6)) / 6.5);
+    fringe.quadraticCurveTo(x - 0.01, d * 0.9, x - 0.04 + sway, d);
+    fringe.quadraticCurveTo(x - 0.075, d * 1.02, x - 0.07, 0.005);
+  }
+  fringe.lineTo(0.0, 0.03);
+  fringe.closePath();
+  solid(fringe, C.dogFeather, lw * 0.8);
+  // Tapered tail: thin at the root, fuller in the middle, tip curling up.
+  const tail = new Path2D();
+  tail.moveTo(0, -0.028);
+  tail.bezierCurveTo(0.1, -0.1, 0.24, -0.1, 0.36, -0.075);
+  tail.bezierCurveTo(0.42, -0.06, 0.46, -0.08, 0.49, -0.115);
+  tail.bezierCurveTo(0.485, -0.05, 0.43, -0.02, 0.34, -0.02);
+  tail.bezierCurveTo(0.22, -0.015, 0.1, 0.0, 0, 0.028);
+  tail.closePath();
+  solid(tail, C.dogBody);
   ctx.restore();
 
-  // body
-  ctx.fillStyle = C.dogBody;
-  ctx.beginPath();
-  ctx.ellipse(x, y - B * 0.42 + bob, B * 0.29, B * 0.25, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
-  ctx.fillStyle = C.dogFeather;
-  ctx.beginPath();
-  ctx.ellipse(x, y - B * 0.36 + bob, B * 0.15, B * 0.12, 0, 0, Math.PI * 2);
-  ctx.fill();
+  ctx.restore();
+}
 
-  // head + floppy ears
-  const hy = y - B * 0.74 + bob;
-  const flop = Math.sin(ph * 2 + 1) * 0.12;
-  for (const side of [-1, 1]) {
-    ctx.save();
-    ctx.translate(x + side * B * 0.15, hy - B * 0.04);
-    ctx.rotate(side * (0.35 + flop));
-    ctx.fillStyle = C.dogFeather;
-    ctx.beginPath();
-    ctx.ellipse(0, B * 0.07, B * 0.07, B * 0.13, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
-  }
-  ctx.fillStyle = C.dogBody;
-  ctx.beginPath();
-  ctx.arc(x, hy, B * 0.17, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
+/** The player: picks the pose from the run state and draws Caius at the lane position. */
+function drawPlayer() {
+  const p = project(laneToX(state.laneVis), CONFIG.dogZ);
+  const u = view.laneW * p.s;
+  const mode = ui.screen === "title" ? "look" : state.grounded ? "run" : "jump";
+  const scale = ui.screen === "title" ? CONFIG.titleDogScale : 1; // bigger hero shot on the Title
+  drawCaius(p.x, p.y, CONFIG.dogHeight * u * scale, {
+    phase: state.runPhase,
+    air: state.jumpY * u,
+    tilt: ui.screen === "title" ? 0 : state.tilt,
+    mode,
+    squashX: state.squashX,
+    squashY: state.squashY,
+  });
 }
 
 /** Rounded-rect path helper (fill/stroke by caller). */
@@ -589,7 +850,8 @@ function render() {
     const alpha = Math.max(0, Math.min(1, (CONFIG.spawnAhead - z) / CONFIG.fadeInDepth));
     items.push({ z, draw: () => { ctx.globalAlpha = alpha; drawBone(t.lane, z, t.wz); ctx.globalAlpha = 1; } });
   }
-  items.push({ z: CONFIG.dogZ, draw: () => drawDog(state.laneVis, CONFIG.dogZ) });
+  for (const it of sceneryItems()) items.push({ z: it.z, draw: () => SCENERY_DRAW[it.type](it) });
+  items.push({ z: CONFIG.dogZ, draw: drawPlayer });
   items.sort((a, b) => b.z - a.z);
   for (const it of items) it.draw();
 }
@@ -1169,7 +1431,12 @@ function update(dt) {
   if (!Number.isFinite(debug.speed)) state.speed = speedAt(state.time);
   state.scroll += state.speed * dt;
   state.runPhase += dt * CONFIG.strideRate * Math.sqrt(state.speed / CONFIG.baseSpeed);
+  const laneBefore = state.laneVis;
   updateMovement(dt);
+  if (dt > 0) {
+    const lean = Math.max(-CONFIG.tiltMax, Math.min(CONFIG.tiltMax, ((state.laneVis - laneBefore) / dt) * CONFIG.tiltPerLaneSpeed));
+    state.tilt += (lean - state.tilt) * Math.min(1, dt * 14);
+  }
   updateSpawning();
   updateTreats();
   updateCollision();
@@ -1198,7 +1465,7 @@ events.onCrash.push(showGameOver);
 window.CaiusRun = {
   CONFIG, state, view, events, project, classifyGesture, moveLane, jump, jumpGravity, jumpAirDistance,
   ui, startRun, currentScore, resetRun, generateRow, generateTreatLine, isRowFair, passableLanes, fairnessSelfTest, hitTest, canClearLow, speedAt,
-  rowGapTime, minSafeGapTime, mulberry32, _updateSpawning: updateSpawning,
+  rowGapTime, minSafeGapTime, mulberry32, _updateSpawning: updateSpawning, _render: render,
 };
 
 window.addEventListener("resize", resize);
