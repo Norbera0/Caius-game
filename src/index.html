@@ -90,6 +90,15 @@ const CONFIG = {
   treatDepth: 0.12,         // pickup depth, z units
   treatPickupHalfWidth: 0.45, // lane widths
   treatMissHeight: 0.6,     // jumping higher than this sails over a bone
+  // --- juice (story 007): cosmetic only, never touches hitboxes or timing ---
+  squashTime: 0.12,         // seconds of landing squash
+  squashY: 0.8,             // vertical scale at the moment of landing
+  squashX: 1.15,            // horizontal scale at the moment of landing
+  shakeTime: 0.3,           // seconds of crash shake
+  shakeAmp: 9,              // px, start of the crash shake (decays to 0)
+  crashToGameOverMs: 350,   // Game Over appears this long after the crash
+  popTime: 0.45,            // seconds a treat pop lasts
+  hudPopTime: 0.2,          // seconds the score pill bumps on a treat
   // --- score & screens (story 004) ---
   scorePerZ: 10,            // points per z unit travelled (~25/s at start)
   titleScrollFactor: 0.4,   // track drifts at this fraction of base speed behind the title
@@ -231,8 +240,9 @@ function resetRun(seed) {
     jumpT: 0,                   // seconds since take-off
     jumpY: 0,                   // height above ground, in lane widths
     tilt: 0,                    // lean into lane changes, radians
-    squashX: 1,                 // landing squash (story 007)
+    squashX: 1,                 // landing squash
     squashY: 1,
+    landT: Infinity,            // seconds since the last landing
     treatPoints: 0,             // bonus points from treats
     treatCount: 0,              // bones collected this run
     treats: [],                 // { lane, wz } bones not yet collected
@@ -336,9 +346,17 @@ function drawBackdrop() {
   g.addColorStop(1, C.skyBottom);
   ctx.fillStyle = g;
   ctx.fillRect(0, 0, view.w, view.horizonY + 1);
-  drawSkyDetails(performance.now());
+  // Unshaken grass under the horizon, so a shaking ground never reveals sky below it.
   ctx.fillStyle = C.grassA;
-  ctx.fillRect(0, view.horizonY, view.w, view.h - view.horizonY);
+  ctx.fillRect(0, view.horizonY, view.w, CONFIG.shakeAmp + 2);
+  drawSkyDetails(performance.now());
+}
+
+/** Grass below the horizon, oversized so a screen shake never shows an edge. */
+function drawGround() {
+  const m = CONFIG.shakeAmp + 2;
+  ctx.fillStyle = CONFIG.colors.grassA;
+  ctx.fillRect(-m, view.horizonY, view.w + 2 * m, view.h - view.horizonY + m);
 }
 
 /** Deterministic 0..1 hash, so scenery is stable without storing it. */
@@ -480,7 +498,7 @@ function drawGrassBands() {
     if ((first + k) % 2 !== 0) continue;
     const a = project(0, z0), b = project(0, z1);
     ctx.fillStyle = CONFIG.colors.grassB;
-    ctx.fillRect(0, b.y, view.w, a.y - b.y + 1);
+    ctx.fillRect(-CONFIG.shakeAmp - 2, b.y, view.w + 2 * CONFIG.shakeAmp + 4, a.y - b.y + 1);
   }
 }
 
@@ -834,7 +852,13 @@ function drawBone(lane, z, seed) {
 
 /** Draw one full frame. World objects are painted far to near. */
 function render() {
-  drawBackdrop();
+  drawBackdrop(); // the sky stays still; everything on the ground shakes
+  ctx.save();
+  if (fx.shakeT > 0) {
+    const k = fx.shakeT / CONFIG.shakeTime, a = CONFIG.shakeAmp * k * k;
+    ctx.translate(Math.sin(fx.shakeT * 93) * a, Math.cos(fx.shakeT * 71) * a);
+  }
+  drawGround();
   drawGrassBands();
   drawRoad();
   const items = [];
@@ -854,6 +878,8 @@ function render() {
   items.push({ z: CONFIG.dogZ, draw: drawPlayer });
   items.sort((a, b) => b.z - a.z);
   for (const it of items) it.draw();
+  drawPops();
+  ctx.restore();
 }
 
 
@@ -967,6 +993,7 @@ function initInput() {
  * @param {-1|1} dir  -1 = left, +1 = right
  */
 function moveLane(dir) {
+  if (!state.running) return;
   const sliding = state.slideT < 1;
   // Clamp against where the dog is heading, including already-queued moves.
   const heading = state.lane + state.queue.reduce((a, b) => a + b, 0);
@@ -987,6 +1014,7 @@ function startSlide(dir) {
 
 /** Jump if on the ground. No double jump while airborne. */
 function jump() {
+  if (!state.running) return;
   if (!state.grounded) return;
   state.grounded = false;
   state.jumpT = 0;
@@ -1021,6 +1049,7 @@ function updateMovement(dt) {
       state.grounded = true;
       state.jumpT = 0;
       state.jumpY = 0;
+      state.landT = 0;
     } else {
       // Exact parabola under constant gravity: y = 4 h u (1 - u).
       state.jumpY = 4 * CONFIG.jumpHeight * u * (1 - u);
@@ -1261,6 +1290,8 @@ function currentScore() {
 /** Start a fresh run (from Title or Try Again). Never reloads the page. */
 function startRun() {
   resetRun(debug.seed);
+  fx.shakeT = 0;
+  fx.pops = [];
   touch.id = null;
   ui.screen = "playing";
 }
@@ -1331,6 +1362,11 @@ function drawHud() {
   const h = px * 1.6;
   const x = view.w - view.safe.right - 12 - w;
   const y = view.safe.top + 12;
+  ctx.save();
+  if (fx.hudPopT < CONFIG.hudPopTime) { // bump when a treat lands in the score
+    const k = 1 + 0.15 * Math.sin(Math.PI * (fx.hudPopT / CONFIG.hudPopTime));
+    ctx.translate(x + w / 2, y + h / 2); ctx.scale(k, k); ctx.translate(-(x + w / 2), -(y + h / 2));
+  }
   ctx.fillStyle = "rgba(255, 246, 230, 0.92)";
   roundRectPath(x, y, w, h, h / 2);
   ctx.fill();
@@ -1338,6 +1374,7 @@ function drawHud() {
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(label, x + w / 2, y + h / 2 + px * 0.04);
+  ctx.restore();
 }
 
 function drawTitle(now) {
@@ -1415,6 +1452,70 @@ function drawScreens(now = performance.now()) {
 
 
 /* ==========================================================================
+   8b. JUICE — landing squash, crash shake, treat pop. Purely cosmetic:
+   nothing here changes hitboxes, timing or score.
+   ========================================================================== */
+const fx = { shakeT: 0, pops: [], hudPopT: Infinity, crashAt: 0 };
+
+/** Crash: shake now, show Game Over a beat later. */
+function onCrashFx() {
+  fx.shakeT = CONFIG.shakeTime;
+  fx.crashAt = performance.now();
+}
+
+/** Treat pickup: a pop at the dog and a bump on the score pill. */
+function onTreatFx() {
+  fx.pops.push({ lane: state.laneVis, y: state.jumpY, t: 0, value: CONFIG.treatValue });
+  fx.hudPopT = 0;
+}
+
+/** Advance all effects; runs every frame, even after a crash. */
+function updateEffects(dt, now) {
+  fx.shakeT = Math.max(0, fx.shakeT - dt);
+  fx.hudPopT += dt;
+  for (const p of fx.pops) p.t += dt;
+  fx.pops = fx.pops.filter((p) => p.t < CONFIG.popTime);
+  // landing squash: strongest at touch-down, eased back to 1
+  if (state.running) state.landT += dt;
+  const e = state.landT < CONFIG.squashTime ? (1 - state.landT / CONFIG.squashTime) ** 2 : 0;
+  state.squashY = 1 - (1 - CONFIG.squashY) * e;
+  state.squashX = 1 + (CONFIG.squashX - 1) * e;
+  if (state.crashed && ui.screen === "playing" && now - fx.crashAt >= CONFIG.crashToGameOverMs) showGameOver();
+}
+
+/** Draw treat pops: a ring, a few sparkles and a rising "+10". */
+function drawPops() {
+  const C = CONFIG.colors;
+  for (const pop of fx.pops) {
+    const k = pop.t / CONFIG.popTime;
+    const p = project(laneToX(pop.lane), CONFIG.dogZ + 0.15);
+    const u = view.laneW * p.s;
+    const cx = p.x, cy = p.y - (0.55 + pop.y) * u;
+    ctx.globalAlpha = 1 - k;
+    ctx.strokeStyle = C.uiBadge;
+    ctx.lineWidth = Math.max(2, u * 0.05 * (1 - k));
+    ctx.beginPath(); ctx.arc(cx, cy, u * (0.12 + 0.35 * k), 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = C.bone;
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2 + 0.4, r = u * (0.15 + 0.45 * k);
+      ctx.beginPath(); ctx.arc(cx + Math.cos(a) * r, cy + Math.sin(a) * r, u * 0.035 * (1 - k * 0.5), 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.font = uiFont(Math.max(14, u * 0.32), 900);
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+    ctx.lineWidth = Math.max(3, u * 0.06);
+    ctx.strokeStyle = C.uiText;
+    const ty = cy - u * (0.35 + 0.5 * k);
+    ctx.strokeText(`+${pop.value}`, cx, ty);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(`+${pop.value}`, cx, ty);
+    ctx.globalAlpha = 1;
+  }
+}
+
+
+/* ==========================================================================
    9. GAME LOOP — requestAnimationFrame with clamped dt
    ========================================================================== */
 let lastTime = null;
@@ -1447,6 +1548,7 @@ function frame(now) {
   const dt = lastTime === null ? 0 : Math.min((now - lastTime) / 1000, CONFIG.maxDt);
   lastTime = now;
   update(dt);
+  updateEffects(dt, now);
   render();
   drawScreens(now);
   requestAnimationFrame(frame);
@@ -1460,11 +1562,12 @@ document.addEventListener("visibilitychange", () => { lastTime = null; });
    ========================================================================== */
 resetRun(debug.seed);
 ui.screen = debug.play ? "playing" : "title";
-events.onCrash.push(showGameOver);
+events.onCrash.push(onCrashFx);
+events.onTreat.push(onTreatFx);
 // Exposed for debugging and tools/qa checks.
 window.CaiusRun = {
   CONFIG, state, view, events, project, classifyGesture, moveLane, jump, jumpGravity, jumpAirDistance,
-  ui, startRun, currentScore, resetRun, generateRow, generateTreatLine, isRowFair, passableLanes, fairnessSelfTest, hitTest, canClearLow, speedAt,
+  ui, fx, startRun, currentScore, resetRun, generateRow, generateTreatLine, isRowFair, passableLanes, fairnessSelfTest, hitTest, canClearLow, speedAt,
   rowGapTime, minSafeGapTime, mulberry32, _updateSpawning: updateSpawning, _render: render,
 };
 

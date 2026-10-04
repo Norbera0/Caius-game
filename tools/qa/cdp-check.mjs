@@ -102,6 +102,7 @@ try {
   if (want("score-and-screens")) await suiteScreens();
   if (want("treats")) await suiteTreats();
   if (want("caius-art-and-park-scenery")) await suiteArt();
+  if (want("juice")) await suiteJuice();
 } catch (e) {
   check("harness ran without error", false, String(e.stack || e));
 } finally {
@@ -455,4 +456,60 @@ async function suiteArt() {
   check("one full frame renders in < 4 ms (desktop; phone budget 16.7 ms)", cost < 4, `${cost.toFixed(2)} ms/frame`);
   const ext = await ev("JSON.stringify({ imgs: document.images.length, links: document.querySelectorAll('link,script[src]').length, res: performance.getEntriesByType('resource').length })").then(JSON.parse);
   check("no external images, scripts, styles or network requests", ext.imgs === 0 && ext.links === 0 && ext.res === 0, JSON.stringify(ext));
+}
+
+async function suiteJuice() {
+  console.log("\n== juice ==");
+  evidenceDir("juice");
+  await open("?nospawn");
+  const C = await ev("JSON.stringify(window.CaiusRun.CONFIG)").then(JSON.parse);
+  // --- landing squash ----------------------------------------------------------
+  const land = await ev(`new Promise((resolve) => {
+    const R = window.CaiusRun; let minY = 1, maxX = 1, takeoff = 0, landed = 0, t0 = performance.now();
+    R.jump(); takeoff = performance.now();
+    const f = () => { const s = R.state; minY = Math.min(minY, s.squashY); maxX = Math.max(maxX, s.squashX);
+      if (!landed && s.grounded && performance.now() - takeoff > 50) landed = performance.now();
+      if (landed && performance.now() - landed > 250) resolve(JSON.stringify({ minY, maxX, air: (landed - takeoff) / 1000, endY: s.squashY, endX: s.squashX }));
+      else requestAnimationFrame(f); };
+    requestAnimationFrame(f); })`).then(JSON.parse);
+  check("landing squash: dog squashes on touch-down", land.minY < 0.9 && land.maxX > 1.08, `scaleY min ${land.minY.toFixed(2)}, scaleX max ${land.maxX.toFixed(2)}`);
+  check("landing squash eases back to normal", Math.abs(land.endY - 1) < 1e-6 && Math.abs(land.endX - 1) < 1e-6);
+  check("airtime unchanged by the effect (cosmetic only)", Math.abs(land.air - C.jumpAirtime) < 0.06, `${land.air.toFixed(3)} s vs ${C.jumpAirtime} s`);
+  // capture the squash frame
+  await ev("window.CaiusRun.jump()"); await waitFor("window.CaiusRun.state.grounded && window.CaiusRun.state.squashY < 0.92", 1500);
+  await shot("01-landing-squash.png", { x: 115, y: 545, width: 160, height: 185, scale: 3 });
+
+  // --- treat pop -------------------------------------------------------------------
+  await sleep(300);
+  await ev(`(() => { const s = window.CaiusRun.state; for (let i = 0; i < 3; i++) s.treats.push({ lane: 1, wz: s.scroll + ${C.dogZ} + 0.6 + i * ${C.treatSpacing} }); })()`);
+  await waitFor("window.CaiusRun.fx.pops.length > 0", 2000);
+  await sleep(90);
+  const pops = await ev("window.CaiusRun.fx.pops.length");
+  check("collecting a bone plays a pop", pops > 0, `${pops} active`);
+  await shot("02-treat-pop.png");
+  await sleep(700);
+  check("pops expire on their own", (await ev("window.CaiusRun.fx.pops.length")) === 0);
+
+  // --- crash shake -> Game Over ------------------------------------------------------
+  const rect0 = await ev("JSON.stringify(document.getElementById('game').getBoundingClientRect())");
+  await ev(`(() => { const s = window.CaiusRun.state; s.obstacles.push({ type: "crate", lane: s.lane, wz: s.scroll + ${C.dogZ} + 0.4 }); })()`);
+  await waitFor("window.CaiusRun.state.crashed", 2000);
+  const tCrash = Date.now();
+  await sleep(50);
+  const shakeNow = await ev("window.CaiusRun.fx.shakeT");
+  await shot("03-crash-shake.png");
+  const scr = await ev("JSON.stringify({ sy: scrollY, sx: scrollX, rect: JSON.stringify(document.getElementById('game').getBoundingClientRect()) })").then(JSON.parse);
+  check("crash starts a screen shake", shakeNow > 0 && shakeNow <= C.shakeTime);
+  check("shake never moves the page or the canvas element", scr.sy === 0 && scr.sx === 0 && scr.rect === rect0);
+  const midScreen = await ev("window.CaiusRun.ui.screen");
+  check("Game Over waits for the shake", midScreen === "playing");
+  await waitFor("window.CaiusRun.ui.screen === 'gameover'", 1000);
+  const dGo = Date.now() - tCrash;
+  check("Game Over appears within ~500 ms of the crash", dGo <= 550, `${dGo} ms`);
+  await sleep(C.gameOverInputDelayMs + 30);
+  const t1 = Date.now(); await key("Enter"); const ok = await waitFor("window.CaiusRun.ui.screen === 'playing'", 1000);
+  check("Try Again is still instant", ok && Date.now() - t1 < 300, `${Date.now() - t1} ms`);
+  check("retry clears leftover shake and pops", (await ev("window.CaiusRun.fx.shakeT === 0 && window.CaiusRun.fx.pops.length === 0")));
+  const fps = await ev("new Promise(r => { let n = 0; const t0 = performance.now(); window.CaiusRun.fx.shakeT = 0.3; const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else r(n); }; requestAnimationFrame(f); })");
+  check("60 fps held while effects run (headless)", fps >= 55, `${fps} frames in 1 s`);
 }

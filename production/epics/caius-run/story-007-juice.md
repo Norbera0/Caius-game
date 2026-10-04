@@ -1,12 +1,12 @@
 # Story 007: Game feel: landing squash, crash shake, treat pop
 
 > **Epic**: Caius Run
-> **Status**: Ready
+> **Status**: Complete
 > **Layer**: Presentation
 > **Type**: Visual/Feel
 > **Estimate**: S
 > **Manifest Version**: N/A (minimal — no control manifest)
-> **Last Updated**: [set by /dev-story when implementation begins]
+> **Last Updated**: 2026-10-05
 
 ## Context
 
@@ -28,13 +28,13 @@
 
 *From `design/game-brief.md` (the **Player goal & fail state** field + the MVP feature this story implements), scoped to this story:*
 
-- [ ] Landing from a jump plays a short squash on Caius (about scaleY 0.8 / scaleX 1.15 for ~100 ms) then eases back.
-- [ ] A crash plays a decaying screen shake (~300 ms) before the Game Over screen shows.
-- [ ] Picking up a bone plays a small pop (scale pop and/or particles) at the bone.
-- [ ] Effects are cosmetic only: hitboxes, timing and score are unchanged.
-- [ ] Game Over appears within ~500 ms of the crash and Try Again is still instant.
-- [ ] Shake never moves the canvas off-screen or triggers page scroll.
-- [ ] All effect strengths and durations are in `CONFIG`; 60 fps is held.
+- [x] Landing from a jump plays a short squash on Caius (about scaleY 0.8 / scaleX 1.15 for ~100 ms) then eases back.
+- [x] A crash plays a decaying screen shake (~300 ms) before the Game Over screen shows.
+- [x] Picking up a bone plays a small pop (scale pop and/or particles) at the bone.
+- [x] Effects are cosmetic only: hitboxes, timing and score are unchanged.
+- [x] Game Over appears within ~500 ms of the crash and Try Again is still instant.
+- [x] Shake never moves the canvas off-screen or triggers page scroll.
+- [x] All effect strengths and durations are in `CONFIG`; 60 fps is held.
 
 ---
 
@@ -75,3 +75,12 @@
 
 - Depends on: Story 004, Story 005, Story 006
 - Unlocks: None
+
+---
+
+## Completion Notes
+**Completed**: 2026-10-05
+**Criteria**: 7/7 passing
+**Deviations**: Advisory — added a small bump on the score pill when a treat is collected. Sign-off was given by Claude under the user's delegated autonomous run, not by the user.
+**Test Evidence**: Visual/Feel: evidence doc at `production/qa/evidence/juice-evidence.md`, 3 retained screenshots, `cdp-check juice` 12/12 PASS.
+**Code Review**: Skipped — solo mode
