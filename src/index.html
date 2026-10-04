@@ -99,6 +99,15 @@ const CONFIG = {
   crashToGameOverMs: 350,   // Game Over appears this long after the crash
   popTime: 0.45,            // seconds a treat pop lasts
   hudPopTime: 0.2,          // seconds the score pill bumps on a treat
+  // --- birthday surprise (story 008) ---
+  birthday: {
+    milestone: 500,         // score that triggers the banner (once per run)
+    slideSec: 0.45,         // slide in / out time
+    holdSec: 3.5,           // seconds fully shown
+    confettiCount: 90,
+    confettiLife: 2.4,      // seconds
+    gravity: 900,           // px/s^2 for confetti
+  },
   // --- score & screens (story 004) ---
   scorePerZ: 10,            // points per z unit travelled (~25/s at start)
   titleScrollFactor: 0.4,   // track drifts at this fraction of base speed behind the title
@@ -114,6 +123,7 @@ const CONFIG = {
     best: "Best",
     newBest: "New best!",
     tryAgain: "Try Again",
+    birthday: "Happy Birthday, Claudine!",
   },
   rowGapTimeStart: 1.4,     // seconds between rows at difficulty 0
   rowGapTimeMin: 0.85,      // seconds between rows at difficulty 1
@@ -192,6 +202,9 @@ const CONFIG = {
     uiAccentDark: "#d9682a",
     uiShade: "rgba(70, 35, 10, 0.28)",
     uiBadge: "#ffd34d",
+    bannerA: "#ff8fab",
+    bannerB: "#ffb347",
+    confetti: ["#ff8fab", "#ffd34d", "#7ed3f7", "#9be15d", "#ffffff", "#ff7a2f"],
   },
 };
 
@@ -243,6 +256,7 @@ function resetRun(seed) {
     squashX: 1,                 // landing squash
     squashY: 1,
     landT: Infinity,            // seconds since the last landing
+    birthdayShown: false,       // banner already played this run
     treatPoints: 0,             // bonus points from treats
     treatCount: 0,              // bones collected this run
     treats: [],                 // { lane, wz } bones not yet collected
@@ -1292,6 +1306,8 @@ function startRun() {
   resetRun(debug.seed);
   fx.shakeT = 0;
   fx.pops = [];
+  fx.bannerT = Infinity;
+  fx.confetti = [];
   touch.id = null;
   ui.screen = "playing";
 }
@@ -1446,7 +1462,7 @@ function drawGameOver(now) {
 function drawScreens(now = performance.now()) {
   ui.buttons = [];
   if (ui.screen === "title") drawTitle(now);
-  else if (ui.screen === "playing") drawHud();
+  else if (ui.screen === "playing") { drawBirthday(); drawHud(); }
   else if (ui.screen === "gameover") drawGameOver(now);
 }
 
@@ -1455,7 +1471,7 @@ function drawScreens(now = performance.now()) {
    8b. JUICE — landing squash, crash shake, treat pop. Purely cosmetic:
    nothing here changes hitboxes, timing or score.
    ========================================================================== */
-const fx = { shakeT: 0, pops: [], hudPopT: Infinity, crashAt: 0 };
+const fx = { shakeT: 0, pops: [], hudPopT: Infinity, crashAt: 0, bannerT: Infinity, confetti: [] };
 
 /** Crash: shake now, show Game Over a beat later. */
 function onCrashFx() {
@@ -1481,6 +1497,119 @@ function updateEffects(dt, now) {
   state.squashY = 1 - (1 - CONFIG.squashY) * e;
   state.squashX = 1 + (CONFIG.squashX - 1) * e;
   if (state.crashed && ui.screen === "playing" && now - fx.crashAt >= CONFIG.crashToGameOverMs) showGameOver();
+  updateBirthday(dt);
+}
+
+/* --- birthday surprise: a banner and confetti at a score milestone; the run never pauses --- */
+
+/** Total banner time: slide in, hold, slide out. */
+function bannerDuration() {
+  const B = CONFIG.birthday;
+  return B.slideSec * 2 + B.holdSec;
+}
+
+function updateBirthday(dt) {
+  const B = CONFIG.birthday;
+  if (ui.screen === "playing" && state.running && !state.birthdayShown && currentScore() >= B.milestone) {
+    state.birthdayShown = true;
+    fx.bannerT = 0;
+    burstConfetti();
+  }
+  fx.bannerT += dt;
+  for (const c of fx.confetti) {
+    c.vy += B.gravity * dt;
+    c.vx *= 1 - 1.2 * dt;
+    c.x += c.vx * dt;
+    c.y += c.vy * dt;
+    c.rot += c.vr * dt;
+    c.t += dt;
+  }
+  fx.confetti = fx.confetti.filter((c) => c.t < B.confettiLife && c.y < view.h + 40);
+}
+
+/** Banner geometry for the current time; null when not showing. */
+function bannerRect() {
+  const B = CONFIG.birthday;
+  const t = fx.bannerT;
+  if (!(t < bannerDuration())) return null;
+  const w = Math.min(view.w - 32, 380);
+  const h = Math.max(52, Math.min(70, view.w * 0.15));
+  const yShown = view.safe.top + 12 + Math.max(18, Math.min(34, view.w * 0.065)) * 1.6 + 12; // under the score pill
+  const yHidden = -h - 10;
+  let k = 1;
+  if (t < B.slideSec) k = t / B.slideSec;
+  else if (t > B.slideSec + B.holdSec) k = 1 - (t - B.slideSec - B.holdSec) / B.slideSec;
+  const e = 1 - (1 - Math.max(0, Math.min(1, k))) ** 3; // ease-out
+  return { x: (view.w - w) / 2, y: yHidden + (yShown - yHidden) * e, w, h };
+}
+
+function burstConfetti() {
+  const B = CONFIG.birthday;
+  const r = bannerRect() || { x: view.w / 2, y: 80, w: 0, h: 0 };
+  const cx = view.w / 2, cy = Math.max(r.y, view.safe.top + 60) + r.h / 2 + 60;
+  const cols = CONFIG.colors.confetti;
+  for (let i = 0; i < B.confettiCount; i++) {
+    const a = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 1.3;
+    const v = 250 + Math.random() * 450;
+    fx.confetti.push({
+      x: cx + (Math.random() - 0.5) * 40, y: cy, vx: Math.cos(a) * v, vy: Math.sin(a) * v,
+      rot: Math.random() * Math.PI, vr: (Math.random() - 0.5) * 14, t: 0,
+      w: 5 + Math.random() * 5, h: 8 + Math.random() * 6, color: cols[i % cols.length],
+    });
+  }
+}
+
+/** A tiny paw print, for the banner corners. */
+function drawPaw(x, y, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.ellipse(x, y + r * 0.35, r * 0.6, r * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+  for (const [dx, dy] of [[-0.62, -0.35], [-0.22, -0.72], [0.22, -0.72], [0.62, -0.35]]) {
+    ctx.beginPath(); ctx.arc(x + dx * r, y + dy * r, r * 0.24, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+/** Banner + confetti, in screen space above the world. Never takes input. */
+function drawBirthday() {
+  const C = CONFIG.colors;
+  for (const c of fx.confetti) {
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, (CONFIG.birthday.confettiLife - c.t) / 0.5);
+    ctx.translate(c.x, c.y);
+    ctx.rotate(c.rot);
+    ctx.fillStyle = c.color;
+    ctx.fillRect(-c.w / 2, -c.h / 2, c.w, c.h * Math.abs(Math.cos(c.rot * 1.7)) + 1);
+    ctx.restore();
+  }
+  const r = bannerRect();
+  if (!r) return;
+  const g = ctx.createLinearGradient(r.x, 0, r.x + r.w, 0);
+  g.addColorStop(0, C.bannerA);
+  g.addColorStop(1, C.bannerB);
+  ctx.fillStyle = "rgba(90, 40, 10, 0.25)";
+  roundRectPath(r.x, r.y + 4, r.w, r.h, r.h / 2);
+  ctx.fill();
+  ctx.fillStyle = g;
+  roundRectPath(r.x, r.y, r.w, r.h, r.h / 2);
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "#ffffff";
+  ctx.stroke();
+  drawPaw(r.x + r.h * 0.5, r.y + r.h * 0.52, r.h * 0.2, "rgba(255,255,255,0.85)");
+  drawPaw(r.x + r.w - r.h * 0.5, r.y + r.h * 0.52, r.h * 0.2, "rgba(255,255,255,0.85)");
+  const text = CONFIG.text.birthday;
+  let px = r.h * 0.4;
+  ctx.font = uiFont(px, 900);
+  const room = r.w - r.h * 1.9;
+  const tw = ctx.measureText(text).width;
+  if (tw > room) { px *= room / tw; ctx.font = uiFont(px, 900); }
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  ctx.lineWidth = Math.max(3, px * 0.18);
+  ctx.strokeStyle = CONFIG.colors.uiText;
+  ctx.strokeText(text, r.x + r.w / 2, r.y + r.h / 2 + px * 0.04);
+  ctx.fillStyle = "#ffffff";
+  ctx.fillText(text, r.x + r.w / 2, r.y + r.h / 2 + px * 0.04);
 }
 
 /** Draw treat pops: a ring, a few sparkles and a rising "+10". */
@@ -1567,7 +1696,7 @@ events.onTreat.push(onTreatFx);
 // Exposed for debugging and tools/qa checks.
 window.CaiusRun = {
   CONFIG, state, view, events, project, classifyGesture, moveLane, jump, jumpGravity, jumpAirDistance,
-  ui, fx, startRun, currentScore, resetRun, generateRow, generateTreatLine, isRowFair, passableLanes, fairnessSelfTest, hitTest, canClearLow, speedAt,
+  ui, fx, bannerRect, bannerDuration, startRun, currentScore, resetRun, generateRow, generateTreatLine, isRowFair, passableLanes, fairnessSelfTest, hitTest, canClearLow, speedAt,
   rowGapTime, minSafeGapTime, mulberry32, _updateSpawning: updateSpawning, _render: render,
 };
 

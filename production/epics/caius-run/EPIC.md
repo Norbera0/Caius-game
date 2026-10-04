@@ -1,7 +1,7 @@
 # Epic: Caius Run
 
 > **Source**: `design/game-brief.md` (minimal tier — epic synthesized from the brief)
-> **Status**: In planning
+> **Status**: Complete (MVP + birthday add-on)
 
 ## Goal
 
@@ -29,10 +29,11 @@ Birthday add-on (separate story after MVP), external libraries, engine, save sys
 
 | # | Story | Type | Status | ADR |
 |---|-------|------|--------|-----|
-| 001 | Pseudo-3D track and game loop | Visual/Feel | Ready | N/A |
-| 002 | Input, lane slide and jump | Logic | Ready | N/A |
-| 003 | Obstacles, spawner, speed ramp and collision | Logic | Ready | N/A |
-| 004 | Score, Title, Play and Game Over screens | UI | Ready | N/A |
-| 005 | Bone treats and bonus points | Logic | Ready | N/A |
-| 006 | Caius character art and park scenery | Visual/Feel | Ready | N/A |
-| 007 | Game feel: landing squash, crash shake, treat pop | Visual/Feel | Ready | N/A |
+| 001 | Pseudo-3D track and game loop | Visual/Feel | Complete | N/A |
+| 002 | Input, lane slide and jump | Logic | Complete | N/A |
+| 003 | Obstacles, spawner, speed ramp and collision | Logic | Complete | N/A |
+| 004 | Score, Title, Play and Game Over screens | UI | Complete | N/A |
+| 005 | Bone treats and bonus points | Logic | Complete | N/A |
+| 006 | Caius character art and park scenery | Visual/Feel | Complete | N/A |
+| 007 | Game feel: landing squash, crash shake, treat pop | Visual/Feel | Complete | N/A |
+| 008 | Birthday banner and confetti at a score milestone | UI | Complete | N/A |
