@@ -40,18 +40,21 @@ const send = (method, params = {}) => new Promise((res, rej) => {
   pending.set(id, { res, rej });
   ws.send(JSON.stringify({ id, method, params }));
 });
-const ev = async (expr) => {
-  const r = await send("Runtime.evaluate", { expression: expr, returnByValue: true });
+const ev = async (expr, commandLineAPI = false) => {
+  const r = await send("Runtime.evaluate", { expression: expr, returnByValue: true, awaitPromise: true, includeCommandLineAPI: commandLineAPI });
   if (r.exceptionDetails) throw new Error(JSON.stringify(r.exceptionDetails));
   return r.result.value;
 };
 const S = () => ev("(({rng, ...s}) => JSON.stringify(s))(window.CaiusRun.state)").then(JSON.parse);
 const reset = () => ev(`Object.assign(window.CaiusRun.state,{lane:1,laneVis:1,slideFrom:1,slideT:1,queue:[],grounded:true,jumpT:0,jumpY:0})`);
-async function open(query = "") {
+// Opens the game straight into play (skips the Title) unless title=true.
+async function open(query = "", { title = false } = {}) {
   await send("Emulation.setTouchEmulationEnabled", { enabled: false });
-  await send("Page.navigate", { url: pathToFileURL(resolve("src/index.html")).href + query });
+  const q = title ? query : (query ? query + "&play" : "?play");
+  await send("Page.navigate", { url: pathToFileURL(resolve("src/index.html")).href + q });
   await sleep(600);
 }
+const metrics = (width, height) => send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 2, mobile: true });
 async function waitFor(expr, ms = 3000) {
   const end = Date.now() + ms;
   while (Date.now() < end) { if (await ev(expr)) return true; await sleep(16); }
@@ -61,7 +64,7 @@ async function waitFor(expr, ms = 3000) {
 const KEYS = {
   ArrowLeft: { key: "ArrowLeft", vk: 37 }, ArrowRight: { key: "ArrowRight", vk: 39 },
   ArrowUp: { key: "ArrowUp", vk: 38 }, KeyA: { key: "a", vk: 65 }, KeyD: { key: "d", vk: 68 },
-  Space: { key: " ", vk: 32 },
+  Space: { key: " ", vk: 32 }, Enter: { key: "Enter", vk: 13 },
 };
 async function key(code, autoRepeat = false) {
   const k = KEYS[code];
@@ -95,6 +98,7 @@ try {
 
   if (want("input-and-movement")) await suiteInput();
   if (want("obstacles-spawner-collision")) await suiteObstacles();
+  if (want("score-and-screens")) await suiteScreens();
 } catch (e) {
   check("harness ran without error", false, String(e.stack || e));
 } finally {
@@ -269,4 +273,82 @@ async function suiteObstacles() {
   await shot("03-row-passing-dog.png");
   await sleep(600); s = await S();
   check("obstacles in other lanes pass by and despawn", !s.crashed && s.obstacles.length === 0);
+}
+
+async function suiteScreens() {
+  console.log("\n== score-and-screens ==");
+  evidenceDir("score-and-screens");
+  await open("?seed=11", { title: true });
+  const C = await ev("JSON.stringify(window.CaiusRun.CONFIG)").then(JSON.parse);
+  const U = () => ev("JSON.stringify((({buttons, ...u}) => u)(window.CaiusRun.ui))").then(JSON.parse);
+  const crateAhead = (ahead = 0.6) => ev(`(() => { const s = window.CaiusRun.state; s.obstacles.push({ type: "crate", lane: s.lane, wz: s.scroll + ${C.dogZ} + ${ahead} }); })()`);
+  const button = () => ev("JSON.stringify(window.CaiusRun.ui.buttons.find(b => b.id === 'retry'))").then(JSON.parse);
+  const tapAt = async (x, y) => { await touch("touchStart", x, y); await sleep(30); await touch("touchEnd"); };
+
+  // --- Title -----------------------------------------------------------------
+  await open("?seed=11", { title: true });
+  let u = await U(), s = await S();
+  check("page opens on the Title screen", u.screen === "title");
+  await sleep(500);
+  await shot("01-title-390x844.png");
+  await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+  await tapAt(195, 500); await sleep(120); u = await U(); s = await S();
+  check("tap on Title starts the run", u.screen === "playing" && s.running);
+  check("the starting tap does not also make the dog jump", s.grounded);
+
+  // --- Play HUD ----------------------------------------------------------------
+  const sc0 = await ev("window.CaiusRun.currentScore()"); await sleep(1500); const sc1 = await ev("window.CaiusRun.currentScore()");
+  check("live score increases while running", sc1 > sc0, `${sc0} -> ${sc1}`);
+  await shot("02-play-hud.png");
+
+  // --- Game Over ------------------------------------------------------------------
+  await crateAhead(); await waitFor("window.CaiusRun.ui.screen === 'gameover'", 2000);
+  u = await U(); s = await S();
+  const frozen = await ev("window.CaiusRun.currentScore()");
+  check("crash shows Game Over with the final score", u.screen === "gameover" && u.lastScore === frozen && !s.running, `score ${u.lastScore}`);
+  check("first run sets the session best", u.best === u.lastScore && u.newBest);
+  let b = await button();
+  check("Try Again button is large (>= 56 px tall)", b && b.h >= 56, b ? `${Math.round(b.w)}x${Math.round(b.h)}` : "missing");
+  await tapAt(b.x + b.w / 2, b.y + b.h / 2); await sleep(60); u = await U();
+  check("a tap in the first 400 ms of Game Over is ignored", u.screen === "gameover");
+  await sleep(500);
+  await shot("03-game-over-new-best.png");
+  await tapAt(b.x + b.w / 2, b.y - 80); await sleep(60); u = await U();
+  check("a tap outside the button does nothing", u.screen === "gameover");
+  const t0 = Date.now(); await tapAt(b.x + b.w / 2, b.y + b.h / 2); const ok = await waitFor("window.CaiusRun.ui.screen === 'playing'", 1000); const dt = Date.now() - t0;
+  s = await S();
+  check("Try Again restarts instantly, straight into play (no Title, no reload)", ok && dt < 1000 && s.running && s.time < 0.5 && s.scroll < 1, `${dt} ms, scroll ${s.scroll.toFixed(2)}`);
+  check("restart resets lane, jump and obstacles", s.lane === C.startLane && s.grounded && s.queue.length === 0 && s.obstacles.length <= 4);
+  await sleep(150); await crateAhead(); await waitFor("window.CaiusRun.ui.screen === 'gameover'", 2000);
+  u = await U();
+  check("a lower second score keeps the old best, no 'New best' badge", u.lastScore < u.best && !u.newBest, `score ${u.lastScore}, best ${u.best}`);
+  await sleep(500); await shot("04-game-over-not-best.png");
+  await send("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await key("Space"); await sleep(80); u = await U();
+  check("Space on Game Over (after the delay) restarts", u.screen === "playing");
+
+  // --- full loop, repeated ------------------------------------------------------------
+  const listeners = () => ev("(() => { const c = getEventListeners(document.getElementById('game')); const d = getEventListeners(document); const w = getEventListeners(window); return JSON.stringify([c, d, w].map(o => Object.values(o).reduce((a, l) => a + l.length, 0))); })()", true).then(JSON.parse);
+  const before = await listeners();
+  let loopsOk = true;
+  for (let i = 0; i < 12; i++) {
+    await sleep(100); await crateAhead();
+    if (!(await waitFor("window.CaiusRun.ui.screen === 'gameover'", 2000))) { loopsOk = false; break; }
+    await sleep(C.gameOverInputDelayMs + 30); await key("Enter");
+    if (!(await waitFor("window.CaiusRun.ui.screen === 'playing'", 1000))) { loopsOk = false; break; }
+  }
+  const after = await listeners();
+  check("start -> play -> die -> retry repeats 12 times", loopsOk);
+  check("no duplicated listeners after 12 retries", JSON.stringify(before) === JSON.stringify(after), `${before} vs ${after}`);
+  const fps = await ev("new Promise(r => { let n = 0; const t0 = performance.now(); const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else r(n); }; requestAnimationFrame(f); })");
+  check("still animating smoothly after the retries", fps >= 50, `${fps} frames in 1 s (headless)`);
+
+  // --- small phone: nothing clipped ----------------------------------------------------
+  await metrics(360, 640);
+  await open("?seed=11", { title: true }); await sleep(400); await shot("05-title-360x640.png");
+  await key("Enter"); await sleep(300); await crateAhead(); await waitFor("window.CaiusRun.ui.screen === 'gameover'", 2000); await sleep(500);
+  await shot("06-game-over-360x640.png");
+  b = await button();
+  check("Game Over button fits a 360x640 screen", b && b.x >= 0 && b.x + b.w <= 360 && b.y + b.h <= 640);
+  await metrics(390, 844);
 }

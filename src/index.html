@@ -19,6 +19,10 @@
     -webkit-touch-callout: none;
     -webkit-tap-highlight-color: transparent;
   }
+  #safe {
+    position: fixed; visibility: hidden; pointer-events: none;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
   canvas {
     display: block;
     position: fixed;
@@ -32,6 +36,7 @@
 </head>
 <body>
 <canvas id="game"></canvas>
+<div id="safe" aria-hidden="true"></div>
 <script>
 "use strict";
 
@@ -68,6 +73,22 @@ const CONFIG = {
   spawnAhead: 13,           // rows are generated this far ahead (scale ~0.07, >2 s warning at max speed)
   fadeInDepth: 2,           // obstacles fade in over this much depth after spawning
   despawnBehind: -0.3,      // obstacles are removed once this far behind the camera plane
+  // --- score & screens (story 004) ---
+  scorePerZ: 10,            // points per z unit travelled (~25/s at start)
+  titleScrollFactor: 0.4,   // track drifts at this fraction of base speed behind the title
+  gameOverInputDelayMs: 400, // taps ignored this long after Game Over appears
+  buttonMinHeight: 56,      // px, Try Again button
+  font: 'ui-rounded, "SF Pro Rounded", "Nunito", "Varela Round", "Trebuchet MS", system-ui, sans-serif',
+  text: {
+    title: "Caius Run",
+    tapToStart: "Tap to Start",
+    hint: "Swipe \u2190 \u2192 to dodge \u00b7 tap or swipe \u2191 to jump",
+    gameOver: "Game Over",
+    score: "Score",
+    best: "Best",
+    newBest: "New best!",
+    tryAgain: "Try Again",
+  },
   rowGapTimeStart: 1.4,     // seconds between rows at difficulty 0
   rowGapTimeMin: 0.85,      // seconds between rows at difficulty 1
   rowSafetyMargin: 0.2,     // reaction slack added to the slide/jump time a gap must allow
@@ -117,6 +138,13 @@ const CONFIG = {
     coneStripe: "#fff6e8",
     coneBase: "#d85c1a",
     obstacleOutline: "#5b3415",
+    uiPanel: "#fff6e6",
+    uiText: "#6b3410",
+    uiTextSoft: "#a0643a",
+    uiAccent: "#ff8a3d",
+    uiAccentDark: "#d9682a",
+    uiShade: "rgba(70, 35, 10, 0.28)",
+    uiBadge: "#ffd34d",
   },
 };
 
@@ -128,7 +156,7 @@ const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 
 /** Layout recomputed on every resize; all drawing reads from here. */
-const view = { w: 0, h: 0, dpr: 1, vx: 0, horizonY: 0, laneW: 0 };
+const view = { w: 0, h: 0, dpr: 1, vx: 0, horizonY: 0, laneW: 0, safe: { top: 0, right: 0, bottom: 0, left: 0 } };
 
 /** Run state. `speed` is the single variable that drives all scrolling. Filled by resetRun(). */
 const state = {};
@@ -139,6 +167,7 @@ const debug = {
   speed: parseFloat(params.get("speed")),
   seed: parseInt(params.get("seed"), 10),
   noSpawn: params.has("nospawn"),
+  play: params.has("play"),       // skip the Title screen
 };
 
 /**
@@ -163,6 +192,7 @@ function resetRun(seed) {
     grounded: true,
     jumpT: 0,                   // seconds since take-off
     jumpY: 0,                   // height above ground, in lane widths
+    treatPoints: 0,             // bonus points from treats (story 005)
     seed: s,
     rng: mulberry32(s),
     spawnEnabled: !debug.noSpawn,
@@ -227,6 +257,12 @@ function resize() {
   view.horizonY = h * CONFIG.horizonRatio;
   const roadHalf = Math.min(w * CONFIG.roadHalfWidthRatio, h * CONFIG.roadHalfWidthMaxRatio);
   view.laneW = (roadHalf * 2) / CONFIG.lanes;
+  // Notch / home-bar insets come from CSS env(); read them through a probe element.
+  const cs = getComputedStyle(document.getElementById("safe"));
+  view.safe = {
+    top: parseFloat(cs.paddingTop) || 0, right: parseFloat(cs.paddingRight) || 0,
+    bottom: parseFloat(cs.paddingBottom) || 0, left: parseFloat(cs.paddingLeft) || 0,
+  };
 }
 
 /** Fill a quad given as [x,y] pairs. */
@@ -545,6 +581,8 @@ function onPointerDown(e) {
   touch.t = e.timeStamp;
   touch.fired = false;
   try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* not fatal */ }
+  // On Title / Game Over the touch belongs to the screen; it must not also become a jump.
+  if (ui.screen !== "playing") { touch.fired = true; screenPointer(e.clientX, e.clientY); }
 }
 
 function onPointerMove(e) {
@@ -568,6 +606,10 @@ function onPointerCancel(e) {
 
 function onKeyDown(e) {
   if (e.repeat) return; // holding a key must not spam moves
+  if (ui.screen !== "playing") {
+    if (e.code === "Space" || e.code === "Enter" || e.code === "NumpadEnter") { e.preventDefault(); screenAction(); }
+    return;
+  }
   switch (e.code) {
     case "ArrowLeft": case "KeyA": moveLane(-1); break;
     case "ArrowRight": case "KeyD": moveLane(1); break;
@@ -838,9 +880,178 @@ function updateCollision() {
 
 
 /* ==========================================================================
-   8. SCREENS — story 004 (title, play HUD, game over)
+   8. SCREENS — Title, Play HUD, Game Over (drawn on the canvas)
    ========================================================================== */
-function drawScreens() { /* story 004 */ }
+
+/** Screen state lives outside `state` so a run reset never wipes the session best. */
+const ui = {
+  screen: "title",      // "title" | "playing" | "gameover"
+  best: 0,              // session best (memory only — no save system)
+  lastScore: 0,
+  newBest: false,
+  gameOverAt: 0,        // performance.now() when Game Over appeared
+  buttons: [],          // hit regions drawn this frame: { id, x, y, w, h }
+};
+
+/** Live score: distance travelled plus treat bonus. */
+function currentScore() {
+  return Math.floor(state.scroll * CONFIG.scorePerZ) + state.treatPoints;
+}
+
+/** Start a fresh run (from Title or Try Again). Never reloads the page. */
+function startRun() {
+  resetRun(debug.seed);
+  touch.id = null;
+  ui.screen = "playing";
+}
+
+/** Crash handler: freeze the score and show Game Over. */
+function showGameOver() {
+  ui.lastScore = currentScore();
+  ui.newBest = ui.lastScore > ui.best;
+  ui.best = Math.max(ui.best, ui.lastScore);
+  ui.gameOverAt = performance.now();
+  ui.screen = "gameover";
+}
+
+/** Keyboard or tap anywhere: the screen's main action. */
+function screenAction() {
+  if (ui.screen === "title") startRun();
+  else if (ui.screen === "gameover" && performance.now() - ui.gameOverAt >= CONFIG.gameOverInputDelayMs) startRun();
+}
+
+/** Pointer on a non-play screen: Title starts on any tap, Game Over only via its button. */
+function screenPointer(x, y) {
+  if (ui.screen === "title") { startRun(); return; }
+  if (ui.screen !== "gameover") return;
+  if (performance.now() - ui.gameOverAt < CONFIG.gameOverInputDelayMs) return;
+  const b = ui.buttons.find((b) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+  if (b && b.id === "retry") startRun();
+}
+
+function uiFont(px, weight = 800) {
+  return `${weight} ${Math.round(px)}px ${CONFIG.font}`;
+}
+
+/** Text with a soft outline, for titles over the busy track. */
+function outlinedText(str, x, y, px, fill, stroke) {
+  ctx.font = uiFont(px, 900);
+  ctx.lineJoin = "round";
+  ctx.lineWidth = Math.max(3, px * 0.16);
+  ctx.strokeStyle = stroke;
+  ctx.strokeText(str, x, y);
+  ctx.fillStyle = fill;
+  ctx.fillText(str, x, y);
+}
+
+/** A rounded pill button with a pressed-look base; registers its hit region. */
+function drawButton(id, label, cx, cy, w, h) {
+  const C = CONFIG.colors;
+  ctx.fillStyle = C.uiAccentDark;
+  roundRectPath(cx - w / 2, cy - h / 2 + h * 0.09, w, h, h / 2);
+  ctx.fill();
+  ctx.fillStyle = C.uiAccent;
+  roundRectPath(cx - w / 2, cy - h / 2, w, h, h / 2);
+  ctx.fill();
+  ctx.fillStyle = "#ffffff";
+  ctx.font = uiFont(h * 0.42, 900);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, cx, cy + h * 0.02);
+  ui.buttons.push({ id, x: cx - w / 2, y: cy - h / 2, w, h: h * 1.09 });
+}
+
+/** Live score pill in the top-right corner, clear of the notch. */
+function drawHud() {
+  const C = CONFIG.colors;
+  const px = Math.max(18, Math.min(34, view.w * 0.065));
+  const label = String(currentScore());
+  ctx.font = uiFont(px, 900);
+  const w = Math.max(px * 3, ctx.measureText(label).width + px * 1.4);
+  const h = px * 1.6;
+  const x = view.w - view.safe.right - 12 - w;
+  const y = view.safe.top + 12;
+  ctx.fillStyle = "rgba(255, 246, 230, 0.92)";
+  roundRectPath(x, y, w, h, h / 2);
+  ctx.fill();
+  ctx.fillStyle = C.uiText;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, x + w / 2, y + h / 2 + px * 0.04);
+}
+
+function drawTitle(now) {
+  const C = CONFIG.colors;
+  const cx = view.w / 2;
+  const big = Math.max(40, Math.min(84, view.w * 0.15));
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  outlinedText(CONFIG.text.title, cx, view.safe.top + view.h * 0.16, big, C.uiAccent, C.uiPanel);
+  const pulse = 0.75 + 0.25 * Math.sin(now / 280); // gentle pulse, never too faint to read
+  ctx.globalAlpha = pulse;
+  outlinedText(CONFIG.text.tapToStart, cx, view.safe.top + view.h * 0.16 + big * 1.05, big * 0.42, C.uiText, C.uiPanel);
+  ctx.globalAlpha = 1;
+  const hintPx = Math.max(12, Math.min(18, view.w * 0.037));
+  ctx.font = uiFont(hintPx, 700);
+  const hw = Math.min(view.w - 32, ctx.measureText(CONFIG.text.hint).width + hintPx * 2);
+  const hy = view.h - view.safe.bottom - hintPx * 3.2;
+  ctx.fillStyle = "rgba(255, 246, 230, 0.9)";
+  roundRectPath(cx - hw / 2, hy - hintPx, hw, hintPx * 2, hintPx);
+  ctx.fill();
+  ctx.fillStyle = C.uiText;
+  ctx.fillText(CONFIG.text.hint, cx, hy + hintPx * 0.05, view.w - 48);
+}
+
+function drawGameOver(now) {
+  const C = CONFIG.colors;
+  ctx.fillStyle = C.uiShade;
+  ctx.fillRect(0, 0, view.w, view.h);
+  const pw = Math.min(view.w - 32, 360);
+  const unit = pw / 10;
+  const ph = unit * 8.4;
+  const px0 = (view.w - pw) / 2;
+  const py0 = Math.max(view.safe.top + 16, (view.h - ph) / 2 - unit);
+  const cx = view.w / 2;
+  ctx.fillStyle = C.uiPanel;
+  roundRectPath(px0, py0, pw, ph, unit * 0.9);
+  ctx.fill();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = C.uiText;
+  ctx.font = uiFont(unit * 1.05, 900);
+  ctx.fillText(CONFIG.text.gameOver, cx, py0 + unit * 1.2);
+  ctx.fillStyle = C.uiTextSoft;
+  ctx.font = uiFont(unit * 0.55, 800);
+  ctx.fillText(CONFIG.text.score.toUpperCase(), cx, py0 + unit * 2.35);
+  ctx.fillStyle = C.uiText;
+  ctx.font = uiFont(unit * 1.7, 900);
+  ctx.fillText(String(ui.lastScore), cx, py0 + unit * 3.45);
+  ctx.fillStyle = C.uiTextSoft;
+  ctx.font = uiFont(unit * 0.55, 800);
+  ctx.fillText(`${CONFIG.text.best.toUpperCase()}  ${ui.best}`, cx, py0 + unit * 4.6);
+  if (ui.newBest) {
+    const bw = unit * 3.6, bh = unit * 0.8, by = py0 + unit * 5.45;
+    ctx.fillStyle = C.uiBadge;
+    roundRectPath(cx - bw / 2, by - bh / 2, bw, bh, bh / 2);
+    ctx.fill();
+    ctx.fillStyle = C.uiText;
+    ctx.font = uiFont(unit * 0.45, 900);
+    ctx.fillText(CONFIG.text.newBest, cx, by + unit * 0.02);
+  }
+  const ready = now - ui.gameOverAt >= CONFIG.gameOverInputDelayMs;
+  ctx.globalAlpha = ready ? 1 : 0.55;
+  const bh = Math.max(CONFIG.buttonMinHeight, unit * 1.5);
+  drawButton("retry", CONFIG.text.tryAgain, cx, py0 + ph - bh * 0.5 - unit * 0.7, pw - unit * 1.6, bh);
+  ctx.globalAlpha = 1;
+}
+
+/** Draw the overlay for the current screen. */
+function drawScreens(now = performance.now()) {
+  ui.buttons = [];
+  if (ui.screen === "title") drawTitle(now);
+  else if (ui.screen === "playing") drawHud();
+  else if (ui.screen === "gameover") drawGameOver(now);
+}
 
 
 /* ==========================================================================
@@ -850,6 +1061,11 @@ let lastTime = null;
 
 /** Advance the simulation by dt seconds. */
 function update(dt) {
+  if (ui.screen === "title") { // track drifts behind the title, no obstacles
+    state.scroll += CONFIG.baseSpeed * CONFIG.titleScrollFactor * dt;
+    state.runPhase += dt * CONFIG.strideRate * 0.6;
+    return;
+  }
   if (!state.running) return;
   state.time += dt;
   if (!Number.isFinite(debug.speed)) state.speed = speedAt(state.time);
@@ -866,7 +1082,7 @@ function frame(now) {
   lastTime = now;
   update(dt);
   render();
-  drawScreens();
+  drawScreens(now);
   requestAnimationFrame(frame);
 }
 
@@ -877,10 +1093,12 @@ document.addEventListener("visibilitychange", () => { lastTime = null; });
    10. BOOT
    ========================================================================== */
 resetRun(debug.seed);
+ui.screen = debug.play ? "playing" : "title";
+events.onCrash.push(showGameOver);
 // Exposed for debugging and tools/qa checks.
 window.CaiusRun = {
   CONFIG, state, view, events, project, classifyGesture, moveLane, jump, jumpGravity, jumpAirDistance,
-  resetRun, generateRow, isRowFair, passableLanes, fairnessSelfTest, hitTest, canClearLow, speedAt,
+  ui, startRun, currentScore, resetRun, generateRow, isRowFair, passableLanes, fairnessSelfTest, hitTest, canClearLow, speedAt,
   rowGapTime, minSafeGapTime, mulberry32,
 };
 
