@@ -39,3 +39,17 @@ Feel (stride timing, lean amount) is not shown by stills; judged from the frame 
 | Role | Name | Date | Sign-off |
 |------|------|------|----------|
 | Lead (solo developer) | Claude, under the user's delegated autonomous run (2026-10-05) — not the user's own review | 2026-10-05 | [x] Approved |
+
+## Revision 2026-10-07 — Caius copied from the reference sheet
+
+At the user's request ("use dog_2.jpg … copy it"), the vector redraw was replaced by the reference art itself:
+`tools/art/build_caius_sprites.py` cuts the six poses out of `assets/art/reference/dog_2.jpg`
+(white removed, rim alpha un-blended) into `assets/art/caius/*.webp` (13-17 KB each) and inlines
+them into `src/index.html`. Run = the two rear running poses alternating each half stride, jump = the
+leap pose, Title = the front sit pose (tongue out), crash = the rear standing pose. Scenery was
+restyled to match the sheet's thin linework: shaded foliage, tapered trunks, grass tufts and pebbles
+along the path; trees and bushes are pre-drawn once into offscreen canvases (2.3 ms/frame desktop).
+
+The screenshots in `caius-art-and-park-scenery/` were recaptured with the new art; 5/5 checks pass.
+The Title now shows the front-facing sit pose instead of a look over the shoulder (the sheet has no
+look-back face). Sign-off for this revision: Claude, under the user's autonomous instruction, not the user's own review.

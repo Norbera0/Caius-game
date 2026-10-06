@@ -87,3 +87,4 @@
 **Deviations**: Advisory — Caius is drawn 1.6x larger on the Title for a clear look-back pose. Sign-off was given by Claude under the user's delegated autonomous run, not by the user.
 **Test Evidence**: Visual/Feel: evidence doc at `production/qa/evidence/caius-art-and-park-scenery-evidence.md`, 10 retained screenshots, `cdp-check` 5/5 PASS.
 **Code Review**: Skipped — solo mode
+**Revised**: 2026-10-07 — Caius now uses sprites cut from `ref_image/dog_2.jpg` (user request); Title shows the front sit pose. See the revision section of the evidence doc.
