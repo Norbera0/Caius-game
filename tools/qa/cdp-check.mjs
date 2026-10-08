@@ -103,6 +103,7 @@ try {
   if (want("treats")) await suiteTreats();
   if (want("caius-art-and-park-scenery")) await suiteArt();
   if (want("juice")) await suiteJuice();
+  if (want("banana-penguin")) await suitePenguin();
 } catch (e) {
   check("harness ran without error", false, String(e.stack || e));
 } finally {
@@ -553,4 +554,67 @@ async function suiteJuice() {
   check("retry clears leftover shake and pops", (await ev("window.CaiusRun.fx.shakeT === 0 && window.CaiusRun.fx.pops.length === 0")));
   const fps = await ev("new Promise(r => { let n = 0; const t0 = performance.now(); window.CaiusRun.fx.shakeT = 0.3; const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else r(n); }; requestAnimationFrame(f); })");
   check("60 fps held while effects run (headless)", fps >= 55, `${fps} frames in 1 s`);
+}
+
+async function suitePenguin() {
+  console.log("\n== banana-penguin ==");
+  evidenceDir("banana-penguin");
+  await open("?seed=5");
+  const C = await ev("JSON.stringify(window.CaiusRun.CONFIG)").then(JSON.parse);
+  const P = C.penguin;
+  // --- simulated spawner: 4 minutes of track ---------------------------------------------
+  const sim = await ev(`(() => {
+    const R = window.CaiusRun, s = R.state;
+    R.resetRun(42); s.running = false;
+    const obs = new Map(), pens = new Map(), bones = new Map(); let t = 0;
+    while (t < 240) {
+      t += 0.05; s.time = t; s.speed = R.speedAt(t); s.scroll += s.speed * 0.05;
+      R._updateSpawning();
+      for (const o of s.obstacles) obs.set(o, 1);
+      for (const p of s.penguins) pens.set(p, t);
+      for (const b of s.treats) bones.set(b, 1);
+    }
+    const O = [...obs.keys()], Pn = [...pens.keys()].sort((a, b) => a.wz - b.wz), B = [...bones.keys()];
+    let overlaps = 0, onBones = 0;
+    for (const p of Pn) {
+      for (const o of O) if (o.lane === p.lane && Math.abs(o.wz - p.wz) < (R.CONFIG.obstacleTypes[o.type].d + ${P.depth}) / 2 + 0.2) overlaps++;
+      for (const b of B) if (Math.abs(b.wz - p.wz) < 1) onBones++;
+    }
+    const gaps = Pn.slice(1).map((p, i) => p.wz - Pn[i].wz);
+    return JSON.stringify({ n: Pn.length, bones: B.length, minGap: gaps.length ? Math.min(...gaps) : null, overlaps, onBones, lanes: [...new Set(Pn.map(p => p.lane))].length });
+  })()`).then(JSON.parse);
+  check("bones are back as the regular treat", sim.bones > 300, `${sim.bones} bones in 4 min`);
+  check("banana penguins are rare: a handful in 4 minutes, never closer than minSpacing", sim.n >= 4 && sim.n <= 30 && sim.minGap >= P.minSpacing, `${sim.n} penguins, closest ${sim.minGap && sim.minGap.toFixed(1)} z apart (min ${P.minSpacing})`);
+  check("a penguin never sits on an obstacle or inside a bone line", sim.overlaps === 0 && sim.onBones === 0, `${sim.overlaps} obstacle overlaps, ${sim.onBones} bone clashes`);
+  // --- live pickup -------------------------------------------------------------------------------
+  await open(`?nospawn&speed=${C.baseSpeed}`);
+  await ev(`(() => { const s = window.CaiusRun.state; s.penguins.push({ lane: 1, wz: s.scroll + ${C.dogZ} + 3 }); s.treats.push({ lane: 0, wz: s.scroll + ${C.dogZ} + 1.6 }, { lane: 0, wz: s.scroll + ${C.dogZ} + 1.96 }); })()`);
+  await sleep(250);
+  await shot("01-penguin-and-bones-approaching.png");
+  const before = await ev("window.CaiusRun.state.treatPoints");
+  await waitFor("window.CaiusRun.state.penguinCount === 1", 3000);
+  const after = await S();
+  check(`collecting the penguin adds +${P.value}`, after.treatPoints - before === P.value && after.running, `treatPoints ${before} -> ${after.treatPoints}`);
+  const cardOn = await ev("window.CaiusRun.fx.cardT < 0.5");
+  check("the Banana Penguin card pops up and the run keeps going", cardOn && after.running);
+  await sleep(450);
+  await shot("02-banana-penguin-card.png");
+  const s1 = (await S()).scroll; await sleep(300); const s2 = (await S()).scroll;
+  check("no pause while the card shows", s2 > s1 + 0.5, `scroll ${s1.toFixed(1)} -> ${s2.toFixed(1)}`);
+  await sleep(P.cardTime * 1000);
+  check("card goes away after a couple of seconds", (await ev(`window.CaiusRun.fx.cardT >= ${P.cardTime}`)));
+  // retry clears it
+  await ev(`(() => { const s = window.CaiusRun.state; s.penguins.push({ lane: s.lane, wz: s.scroll + ${C.dogZ} + 0.5 }); })()`);
+  await waitFor("window.CaiusRun.fx.cardT < 0.3", 2000);
+  await ev(`(() => { const s = window.CaiusRun.state; s.obstacles.push({ type: "crate", lane: s.lane, wz: s.scroll + ${C.dogZ} + 0.5 }); })()`);
+  await waitFor("window.CaiusRun.ui.screen === 'gameover'", 2000);
+  await sleep(C.gameOverInputDelayMs + 50); await key("Enter"); await sleep(100);
+  check("retry clears the card and the penguin count", (await ev("window.CaiusRun.fx.cardT === Infinity && window.CaiusRun.state.penguinCount === 0 && window.CaiusRun.state.penguins.length === 0")));
+  // small phone
+  await metrics(360, 640);
+  await open(`?nospawn&speed=${C.baseSpeed}`);
+  await ev(`(() => { const s = window.CaiusRun.state; s.penguins.push({ lane: 1, wz: s.scroll + ${C.dogZ} + 0.6 }); })()`);
+  await waitFor("window.CaiusRun.fx.cardT < 0.5", 2000); await sleep(400);
+  await shot("03-card-360x640.png");
+  await metrics(390, 844);
 }

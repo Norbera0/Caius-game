@@ -37,3 +37,4 @@ Birthday add-on (separate story after MVP), external libraries, engine, save sys
 | 006 | Caius character art and park scenery | Visual/Feel | Complete | N/A |
 | 007 | Game feel: landing squash, crash shake, treat pop | Visual/Feel | Complete | N/A |
 | 008 | Birthday banner and confetti at a score milestone | UI | Removed | N/A |
+| 009 | Banana penguin bonus with a pick-up card | UI | Complete | N/A |

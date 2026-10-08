@@ -27,7 +27,7 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parents[2]
 SHEET = ROOT / "assets/art/reference/dog_2.jpg"
 TREAT = ROOT / "assets/art/reference/banana_penguin.jpg"
-TREAT_HEIGHT = 240      # px; the treat is never drawn taller than ~200 device px
+TREAT_HEIGHT = 360      # px; covers the big in-run penguin and the pick-up card at 3x DPR
 OUT_DIR = ROOT / "assets/art/caius"
 GAME = ROOT / "src/index.html"
 
