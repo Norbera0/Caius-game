@@ -584,7 +584,7 @@ async function suitePenguin() {
     return JSON.stringify({ n: Pn.length, bones: B.length, minGap: gaps.length ? Math.min(...gaps) : null, overlaps, onBones, lanes: [...new Set(Pn.map(p => p.lane))].length });
   })()`).then(JSON.parse);
   check("bones are back as the regular treat", sim.bones > 300, `${sim.bones} bones in 4 min`);
-  check("banana penguins are rare: a handful in 4 minutes, never closer than minSpacing", sim.n >= 4 && sim.n <= 30 && sim.minGap >= P.minSpacing, `${sim.n} penguins, closest ${sim.minGap && sim.minGap.toFixed(1)} z apart (min ${P.minSpacing})`);
+  check("Gingu stays special: a regular sight but never closer than minSpacing", sim.n >= 10 && sim.n <= 45 && sim.minGap >= P.minSpacing, `${sim.n} penguins, closest ${sim.minGap && sim.minGap.toFixed(1)} z apart (min ${P.minSpacing})`);
   check("a penguin never sits on an obstacle or inside a bone line", sim.overlaps === 0 && sim.onBones === 0, `${sim.overlaps} obstacle overlaps, ${sim.onBones} bone clashes`);
   // --- live pickup -------------------------------------------------------------------------------
   await open(`?nospawn&speed=${C.baseSpeed}`);
@@ -596,9 +596,10 @@ async function suitePenguin() {
   const after = await S();
   check(`collecting the penguin adds +${P.value}`, after.treatPoints - before === P.value && after.running, `treatPoints ${before} -> ${after.treatPoints}`);
   const cardOn = await ev("window.CaiusRun.fx.cardT < 0.5");
-  check("the Banana Penguin card pops up and the run keeps going", cardOn && after.running);
+  check("the \"Gingu acquired!\" card pops up and the run keeps going", cardOn && after.running);
+  check("the card names Gingu", (await ev("window.CaiusRun.CONFIG.text.penguinTitle")) === "Gingu acquired!");
   await sleep(450);
-  await shot("02-banana-penguin-card.png");
+  await shot("02-gingu-card.png");
   const s1 = (await S()).scroll; await sleep(300); const s2 = (await S()).scroll;
   check("no pause while the card shows", s2 > s1 + 0.5, `scroll ${s1.toFixed(1)} -> ${s2.toFixed(1)}`);
   await sleep(P.cardTime * 1000);

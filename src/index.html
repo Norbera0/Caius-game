@@ -109,10 +109,10 @@ const CONFIG = {
   treatValue: 10,           // bonus points per treat
   treatWidth: 0.4,          // bone width, lane widths
   treatFloat: 0.16,         // hover height, lane widths
-  // --- banana penguin: a rare, big bonus pickup with its own pop-up card ---
+  // --- Gingu the banana penguin: a rare, big bonus pickup with its own pop-up card ---
   penguin: {
-    chance: 0.35,           // chance an eligible gap gets one (when no bone line is placed there)
-    minSpacing: 40,         // z units between two penguins (~10-16 s of running)
+    chance: 0.5,            // chance an eligible gap gets one (when no bone line is placed there)
+    minSpacing: 28,         // z units between two penguins (~7-11 s of running)
     firstAfter: 30,         // z units before the first one can appear
     value: 100,             // bonus points
     height: 1.15,           // lane widths — much bigger than a bone
@@ -149,8 +149,8 @@ const CONFIG = {
     best: "Best",
     newBest: "New best!",
     tryAgain: "Try Again",
-    penguinTitle: "Banana Penguin!",
-    penguinSub: "Rare find",
+    penguinTitle: "Gingu acquired!",  // Gingu is the banana penguin's name
+    penguinSub: "Banana Penguin",
   },
   rowGapTimeStart: 1.4,     // seconds between rows at difficulty 0
   rowGapTimeMin: 0.85,      // seconds between rows at difficulty 1
@@ -1444,7 +1444,7 @@ function drawBone(lane, z, seed) {
   ctx.restore();
 }
 
-/** The banana penguin bonus: big, hovering, wobbling, with a golden glow and orbiting sparkles. */
+/** Gingu the banana penguin: big, hovering, wobbling, with a golden glow and orbiting sparkles. */
 function drawPenguin(lane, z, seed) {
   const sp = SPRITES.banana_penguin;
   if (!sp || !sp.img.complete || !sp.img.naturalWidth) return; // still decoding
@@ -2133,7 +2133,7 @@ function onCrashFx() {
   fx.crashAt = performance.now();
 }
 
-/** Banana penguin pickup: a big pop at the dog and the "Banana Penguin!" card. */
+/** Gingu pickup: a big pop at the dog and the "Gingu acquired!" card. */
 function onPenguinFx() {
   fx.pops.push({ lane: state.laneVis, y: state.jumpY, t: 0, value: CONFIG.penguin.value });
   fx.hudPopT = 0;
@@ -2141,7 +2141,7 @@ function onPenguinFx() {
 }
 
 /**
- * The "Banana Penguin!" card: pops in with a little overshoot under the score pill,
+ * The "Gingu acquired!" card: pops in with a little overshoot under the score pill,
  * shows the penguin and its points, then fades. The run keeps going underneath.
  */
 function drawPenguinCard() {

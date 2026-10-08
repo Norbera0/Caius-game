@@ -39,3 +39,4 @@
 **Completed**: 2026-10-09
 **Deviations**: The card does not pause the game, so a pick-up never causes an unfair crash.
 **Code Review**: Skipped — solo mode
+**Revised**: 2026-10-09 — the banana penguin is named **Gingu**; the card reads "Gingu acquired!" with "Banana Penguin +100". Made a bit more common (chance 0.5, min spacing 28 z, about one every 7-11 s; 24 in a simulated 4 minutes).
