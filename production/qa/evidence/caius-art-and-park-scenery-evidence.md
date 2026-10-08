@@ -53,3 +53,31 @@ along the path; trees and bushes are pre-drawn once into offscreen canvases (2.3
 The screenshots in `caius-art-and-park-scenery/` were recaptured with the new art; 5/5 checks pass.
 The Title now shows the front-facing sit pose instead of a look over the shoulder (the sheet has no
 look-back face). Sign-off for this revision: Claude, under the user's autonomous instruction, not the user's own review.
+
+## Revision 2026-10-09 — Caius animated as a puppet rig
+
+At the user's request (smoother, state-dependent motion; keep the reference design;
+the tongue has a spot on his left side), Caius is now a cut-out rig built from the
+reference art by `tools/art/build_caius_sprites.py`:
+
+- Running rig from the rear running pose: four legs, tail, head, tongue, body. Pieces
+  turn around their joints; areas hidden behind a front piece are inpainted; body
+  edges along cuts are feathered; the tongue keeps only tongue-coloured pixels and
+  gains a dark spot on Caius's left side.
+- Sitting rig (Title) from the front sit pose: body, head, tongue.
+- Motion: a continuous diagonal trot (legs lift and swing), body bob and roll, a
+  springy tail wag that swings away from turns, a head that bobs a beat behind the
+  body and looks into turns, a tongue that flaps with each step. Jump: legs tuck,
+  body stretches on the rise, tail streams, tongue lags. Landing: squash, legs back
+  into the trot. Crash: flinch, trot stops, tail droops. Title: breathing, slow head
+  tilt, panting tongue, blinks.
+- Checks (`cdp-check caius-art-and-park-scenery`, 11/11): continuous movement of tail,
+  head and tongue; max frame-to-frame step 0.03 rad (tail) / 0.27 px (head); tuck on
+  jump; trot resumes after landing; trot stops and tail droops on crash; sit pose
+  animates; blink captured in `08-title-blink.png`. 3.0 ms/frame desktop.
+- Screenshots `04-run-cycle-1..4.png`, `06-jump-pose.png`, `01/02` (Title) recaptured.
+
+Known limits: the rear running pose's own leg positions set the stride's look, so
+leg motion is a few pixels of lift and swing rather than a full redraw; at a
+strong jump tuck a faint straight edge can show where the body was cut above the
+right hind leg. Sign-off: Claude under the user's autonomous instruction.

@@ -455,6 +455,37 @@ async function suiteArt() {
   check("60 fps held with scenery, dog art and obstacles (headless desktop CPU)", fps >= 55, `${fps} frames in 1 s`);
   const cost = await ev(`(() => { const R = window.CaiusRun; const t0 = performance.now(); for (let i = 0; i < 200; i++) R._render(); return (performance.now() - t0) / 200; })()`);
   check("one full frame renders in < 4 ms (desktop; phone budget 16.7 ms)", cost < 4, `${cost.toFixed(2)} ms/frame`);
+  // --- rig: the dog moves continuously, and differently per state -------------------------
+  await open("?nospawn");
+  const sample = (ms) => ev(`new Promise(r => { const R = window.CaiusRun, out = []; const t0 = performance.now();
+    const f = () => { const a = R.rigAnim; out.push({ tail: a.tail[0], headY: a.headY[0], tuck: a.tuck[0], gait: a.gait[0], tongue: a.tongue[0] });
+      if (performance.now() - t0 < ${ms}) requestAnimationFrame(f); else r(JSON.stringify(out)); }; requestAnimationFrame(f); })`).then(JSON.parse);
+  const range = (xs) => Math.max(...xs) - Math.min(...xs);
+  const steps = (xs) => Math.max(...xs.slice(1).map((v, i) => Math.abs(v - xs[i])));
+  let run = await sample(1200);
+  check("running: tail, head and tongue keep moving", range(run.map(f => f.tail)) > 0.1 && range(run.map(f => f.headY)) > 1 && range(run.map(f => f.tongue)) > 0.05,
+    `tail ${range(run.map(f => f.tail)).toFixed(2)} rad, head ${range(run.map(f => f.headY)).toFixed(1)} px, tongue ${range(run.map(f => f.tongue)).toFixed(2)} rad`);
+  check("running: motion is smooth (no frame-to-frame jumps)", steps(run.map(f => f.tail)) < 0.08 && steps(run.map(f => f.headY)) < 1.5,
+    `max step tail ${steps(run.map(f => f.tail)).toFixed(3)} rad, head ${steps(run.map(f => f.headY)).toFixed(2)} px`);
+  await ev("window.CaiusRun.jump()");
+  const air = await sample(450);
+  check("jumping: legs tuck in", Math.max(...air.map(f => f.tuck)) > 0.8 && Math.min(...air.map(f => f.gait)) < 0.2, `tuck max ${Math.max(...air.map(f => f.tuck)).toFixed(2)}`);
+  await sleep(500);
+  const back = await sample(300);
+  check("after landing: legs back in the trot", back[back.length - 1].tuck < 0.2 && back[back.length - 1].gait > 0.8);
+  await ev(`(() => { const s = window.CaiusRun.state; s.obstacles.push({ type: "crate", lane: s.lane, wz: s.scroll + ${await ev("window.CaiusRun.CONFIG.dogZ")} + 0.4 }); })()`);
+  await waitFor("window.CaiusRun.state.crashed", 2000);
+  const crash = await sample(500);
+  const lastC = crash[crash.length - 1];
+  check("crash: trot stops and the tail droops", lastC.gait < 0.15 && lastC.tail > 0.3, `gait ${lastC.gait.toFixed(2)}, tail ${lastC.tail.toFixed(2)} rad`);
+  await open("", { title: true });
+  await sleep(300);
+  const pose = (t) => ev(`(() => { window.CaiusRun.rigAnim.time = ${t}; return JSON.stringify(window.CaiusRun._sitRigPose()); })()`).then(JSON.parse);
+  const p1 = await pose(0.1), p2 = await pose(0.4);
+  check("title: Caius breathes and pants (sit pose animates)", p1.body.sy !== p2.body.sy && p1.tongue.sy !== p2.tongue.sy);
+  await ev("window.CaiusRun.rigAnim.time = -0.3"); await sleep(30); // negative time keeps the blink on screen for ~0.4 s
+  await shot("08-title-blink.png", { x: 120, y: 440, width: 150, height: 120, scale: 3 });
+
   const ext = await ev("JSON.stringify({ imgs: document.images.length, links: document.querySelectorAll('link,script[src]').length, res: performance.getEntriesByType('resource').length })").then(JSON.parse);
   check("no external images, scripts, styles or network requests", ext.imgs === 0 && ext.links === 0 && ext.res === 0, JSON.stringify(ext));
 }

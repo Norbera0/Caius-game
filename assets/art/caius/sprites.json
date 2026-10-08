@@ -40,5 +40,32 @@
     "h": 240,
     "ax": 57.0,
     "ay": 239
+  },
+  "rig_run": {
+    "w": 350,
+    "h": 362,
+    "ax": 168.0,
+    "ay": 359,
+    "order": [
+      "legFR",
+      "legFL",
+      "legHR",
+      "legHL",
+      "tail",
+      "head",
+      "tongue",
+      "body"
+    ]
+  },
+  "rig_sit": {
+    "w": 188,
+    "h": 386,
+    "ax": 94.0,
+    "ay": 383,
+    "order": [
+      "body",
+      "head",
+      "tongue"
+    ]
   }
 }
