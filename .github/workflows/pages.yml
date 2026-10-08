@@ -1,0 +1,44 @@
+# Deploys the game to GitHub Pages on every push to main.
+# Only the single-file game is published (src/index.html -> site root), so the
+# framework docs, reference art and logs in this repo are not served.
+# Action versions follow GitHub's own static Pages starter workflow.
+name: Deploy game to Pages
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/index.html", ".github/workflows/pages.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Stage the game as the site
+        run: |
+          mkdir _site
+          cp src/index.html _site/index.html
+          touch _site/.nojekyll
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
