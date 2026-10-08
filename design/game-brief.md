@@ -22,7 +22,7 @@
 7. Juice: landing squash, crash screen shake, treat pop.
 
 ## Out of scope — not building this
-- Birthday add-on (banner "Happy Birthday, Claudine!" + confetti at a score milestone, e.g. 500): separate story, built after MVP is fun; must not pause the run.
+- Birthday add-on: built as story 008, then removed on 2026-10-09 at the user's request; the game ships without it.
 - No external libraries, no engine, no assets beyond the single `.html` file (inline CSS + JS).
 - No save system or persistent leaderboard (best score is per session), no shop, no power-ups, no multiple characters or levels, no audio required for MVP.
 

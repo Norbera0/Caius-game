@@ -1,7 +1,7 @@
 # Epic: Caius Run
 
 > **Source**: `design/game-brief.md` (minimal tier — epic synthesized from the brief)
-> **Status**: Complete (MVP + birthday add-on)
+> **Status**: Complete (MVP; birthday add-on built, then removed)
 
 ## Goal
 
@@ -36,4 +36,4 @@ Birthday add-on (separate story after MVP), external libraries, engine, save sys
 | 005 | Bone treats and bonus points | Logic | Complete | N/A |
 | 006 | Caius character art and park scenery | Visual/Feel | Complete | N/A |
 | 007 | Game feel: landing squash, crash shake, treat pop | Visual/Feel | Complete | N/A |
-| 008 | Birthday banner and confetti at a score milestone | UI | Complete | N/A |
+| 008 | Birthday banner and confetti at a score milestone | UI | Removed | N/A |

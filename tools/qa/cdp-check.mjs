@@ -103,7 +103,6 @@ try {
   if (want("treats")) await suiteTreats();
   if (want("caius-art-and-park-scenery")) await suiteArt();
   if (want("juice")) await suiteJuice();
-  if (want("birthday-banner")) await suiteBirthday();
 } catch (e) {
   check("harness ran without error", false, String(e.stack || e));
 } finally {
@@ -554,51 +553,4 @@ async function suiteJuice() {
   check("retry clears leftover shake and pops", (await ev("window.CaiusRun.fx.shakeT === 0 && window.CaiusRun.fx.pops.length === 0")));
   const fps = await ev("new Promise(r => { let n = 0; const t0 = performance.now(); window.CaiusRun.fx.shakeT = 0.3; const f = () => { n++; if (performance.now() - t0 < 1000) requestAnimationFrame(f); else r(n); }; requestAnimationFrame(f); })");
   check("60 fps held while effects run (headless)", fps >= 55, `${fps} frames in 1 s`);
-}
-
-async function suiteBirthday() {
-  console.log("\n== birthday-banner ==");
-  evidenceDir("birthday-banner");
-  await open("?nospawn");
-  const C = await ev("JSON.stringify(window.CaiusRun.CONFIG)").then(JSON.parse);
-  const B = C.birthday;
-  const nearMilestone = () => ev(`window.CaiusRun.state.scroll = (${B.milestone} - 12) / ${C.scorePerZ}`);
-  check("no banner before the milestone", (await ev("window.CaiusRun.bannerRect()")) === null);
-  await nearMilestone();
-  const ok = await waitFor("window.CaiusRun.fx.bannerT < 0.2", 3000);
-  const sc = await ev("window.CaiusRun.currentScore()");
-  check(`banner triggers when the score reaches ${B.milestone}`, ok && sc >= B.milestone, `score ${sc}`);
-  check("confetti burst starts with the banner", (await ev("window.CaiusRun.fx.confetti.length")) > 30);
-  const s0 = await S(); await sleep(400);
-  await key("ArrowLeft"); await sleep(250);
-  const s1 = await S();
-  check("run never pauses: scrolling and input continue during the banner", s1.running && s1.scroll > s0.scroll + 0.5 && s1.lane === 0, `scroll ${s0.scroll.toFixed(1)} -> ${s1.scroll.toFixed(1)}, lane ${s1.lane}`);
-  await shot("01-banner-390x844.png");
-  const r = await ev("JSON.stringify(window.CaiusRun.bannerRect())").then(JSON.parse);
-  check("banner fits the screen and sits below the score pill", r && r.x >= 0 && r.x + r.w <= 390 && r.y >= 12 + 34 * 1.6 * 0.9, r ? `x ${r.x.toFixed(0)} w ${r.w.toFixed(0)} y ${r.y.toFixed(0)}` : "none");
-  await sleep(1300); await shot("02-banner-confetti-settling.png");
-  const dur = await ev("window.CaiusRun.bannerDuration()");
-  await waitFor(`window.CaiusRun.fx.bannerT > ${dur}`, 6000);
-  check("banner slides away after a few seconds", (await ev("window.CaiusRun.bannerRect()")) === null, `${dur.toFixed(2)} s total`);
-  const tBefore = await ev("window.CaiusRun.fx.bannerT");
-  await ev(`window.CaiusRun.state.scroll += 50`); await sleep(300);
-  check("shows only once per run", (await ev("window.CaiusRun.fx.bannerT")) > tBefore);
-  // next run: crash during the banner -> hidden on Game Over -> retry -> shows again
-  await ev(`(() => { const s = window.CaiusRun.state; s.obstacles.push({ type: "crate", lane: s.lane, wz: s.scroll + ${C.dogZ} + 0.4 }); })()`);
-  await waitFor("window.CaiusRun.ui.screen === 'gameover'", 2000);
-  await sleep(C.gameOverInputDelayMs + 30); await key("Enter"); await waitFor("window.CaiusRun.ui.screen === 'playing'", 1000);
-  check("retry clears banner and confetti", (await ev("window.CaiusRun.bannerRect() === null && window.CaiusRun.fx.confetti.length === 0")));
-  await nearMilestone();
-  check("banner shows again on the next run", await waitFor("window.CaiusRun.fx.bannerT < 0.3", 3000));
-  await sleep(300);
-  await ev(`(() => { const s = window.CaiusRun.state; s.obstacles.push({ type: "crate", lane: s.lane, wz: s.scroll + ${C.dogZ} + 0.4 }); })()`);
-  await waitFor("window.CaiusRun.ui.screen === 'gameover'", 2000); await sleep(450);
-  await shot("03-game-over-hides-banner.png");
-  // small phone
-  await metrics(360, 640);
-  await open("?nospawn"); await nearMilestone(); await waitFor("window.CaiusRun.fx.bannerT < 0.2", 3000); await sleep(700);
-  await shot("04-banner-360x640.png");
-  const r2 = await ev("JSON.stringify(window.CaiusRun.bannerRect())").then(JSON.parse);
-  check("banner fits a 360x640 screen", r2 && r2.x >= 0 && r2.x + r2.w <= 360);
-  await metrics(390, 844);
 }

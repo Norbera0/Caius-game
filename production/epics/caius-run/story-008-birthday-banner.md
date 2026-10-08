@@ -1,7 +1,7 @@
 # Story 008: Birthday banner and confetti at a score milestone
 
 > **Epic**: Caius Run
-> **Status**: Complete
+> **Status**: Removed
 > **Layer**: Presentation
 > **Type**: UI
 > **Estimate**: S
@@ -83,3 +83,4 @@
 **Deviations**: None. Small paw prints decorate the banner ends.
 **Test Evidence**: UI: screenshots in `production/qa/evidence/birthday-banner/` (banner with confetti at 390x844 and 360x640, confetti settling, Game Over hiding the banner). `cdp-check birthday-banner` 10/10 PASS.
 **Code Review**: Skipped — solo mode
+**Removed**: 2026-10-09 — taken out at the user's request ("just the game"). Code and its checks were deleted from `src/index.html` and `tools/qa/cdp-check.mjs`; the screenshots in `production/qa/evidence/birthday-banner/` are kept as history.
