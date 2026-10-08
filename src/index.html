@@ -85,6 +85,10 @@ const CONFIG = {
   },
   sceneryPeriod: 0.55,      // z between scenery slots on each side
   sceneryDepth: 16,         // scenery drawn up to this depth
+  farRowChance: 0.55,       // chance a scenery slot also gets a tree in the back row
+  lampEvery: 9,             // a lamp post every N scenery slots, alternating sides
+  hazeFrom: 6,              // scenery fades into the haze beyond this depth...
+  hazeMax: 0.45,            // ...by up to this much at sceneryDepth
   // Near the dog the ground moves at about (H - horizon) * K * s(dogZ)^2 * speed px/s,
   // so K * speed ~ 2.5 is roughly 800 px/s on a 844 px tall phone.
   baseSpeed: 2.5,           // forward speed at run start, z units per second
@@ -158,7 +162,11 @@ const CONFIG = {
     crate: { w: 0.78, h: 1.25, d: 0.32, low: false },
     log: { w: 0.86, h: 0.34, d: 0.22, low: true },
     cone: { w: 0.42, h: 0.46, d: 0.18, low: true },
+    hay: { w: 0.8, h: 1.1, d: 0.34, low: false },     // round bale: too tall to jump
+    hurdle: { w: 0.9, h: 0.42, d: 0.12, low: true },  // striped bar on two posts
   },
+  tallTypes: ["crate", "crate", "hay"],   // picked when a lane must be switched
+  lowTypes: ["log", "cone", "hurdle"],    // picked when it must be jumped
   maxDt: 0.05,              // delta-time clamp (seconds)
   laneSlideTime: 0.12,      // seconds for one lane change (eased)
   jumpHeight: 0.85,         // peak jump height, in lane widths
@@ -197,6 +205,45 @@ const CONFIG = {
     benchLeg: "#7d4a22",
     sun: "#fff3b0",
     farTrees: "#62b65a",
+    hillFar: "#b4dd98",
+    hillNear: "#93cf74",
+    haze: "rgba(214, 238, 200, 0.55)",
+    bird: "#4b3b36",
+    roadWear: "#f7d6a3",
+    stone: "#d9cdb9",
+    stoneLine: "#a3937c",
+    crateFrame: "#b9773a",
+    crateSide: "#c4823f",
+    nail: "#6b4420",
+    logTop: "#b87238",
+    moss: "#7fbf54",
+    coneDark: "#e2611f",
+    coneLight: "#ff9a4f",
+    hay: "#eccb63",
+    hayDark: "#cfa53d",
+    hayLine: "#8c6620",
+    hurdleRed: "#e8513f",
+    hurdleWhite: "#fff8ee",
+    hurdlePost: "#8a5a35",
+    pine: "#3f9a5a",
+    pineShade: "#2f7d47",
+    pineLight: "#5cb874",
+    birchBark: "#f4f1ea",
+    birchMark: "#3d3a36",
+    birchLeaf: "#9ad35f",
+    birchShade: "#78b947",
+    blossom: "#f7aecb",
+    blossomShade: "#e888ae",
+    blossomLight: "#ffd6e6",
+    rock: "#b9b3a8",
+    rockShade: "#958e83",
+    rockLight: "#d7d2c9",
+    lampPole: "#3d4a45",
+    lampGlass: "#fff1b8",
+    blanketA: "#e5534b",
+    blanketB: "#fff6ee",
+    basket: "#c58b4a",
+    grassClump: "#4fae47",
     crate: "#e0a052",
     crateTop: "#f2c27f",
     crateDark: "#9c5f2a",
@@ -365,18 +412,34 @@ function groundQuad(x0, x1, z0, z1, color) {
   fillQuad([a.x, a.y], [b.x, b.y], [c.x, c.y], [d.x, d.y], color);
 }
 
+/** The still part of the sky (gradient, sun, hills, tree line), redrawn only on resize. */
+let skyCache = null;
+
 /** Sky, then flat grass below the horizon. */
 function drawBackdrop() {
   const C = CONFIG.colors;
-  const g = ctx.createLinearGradient(0, 0, 0, view.horizonY);
-  g.addColorStop(0, C.skyTop);
-  g.addColorStop(1, C.skyBottom);
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, view.w, view.horizonY + 1);
-  // Unshaken grass under the horizon, so a shaking ground never reveals sky below it.
-  ctx.fillStyle = C.grassA;
-  ctx.fillRect(0, view.horizonY, view.w, CONFIG.shakeAmp + 2);
-  drawSkyDetails(performance.now());
+  const key = `${view.w}x${view.h}@${view.dpr}`;
+  if (!skyCache || skyCache.key !== key) {
+    const off = document.createElement("canvas");
+    off.width = Math.round(view.w * view.dpr);
+    off.height = Math.round((view.horizonY + CONFIG.shakeAmp + 2) * view.dpr);
+    const saved = ctx;
+    ctx = off.getContext("2d");
+    ctx.scale(view.dpr, view.dpr);
+    const g = ctx.createLinearGradient(0, 0, 0, view.horizonY);
+    g.addColorStop(0, C.skyTop);
+    g.addColorStop(1, C.skyBottom);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, view.w, view.horizonY + 1);
+    // Unshaken grass under the horizon, so a shaking ground never reveals sky below it.
+    ctx.fillStyle = C.grassA;
+    ctx.fillRect(0, view.horizonY, view.w, CONFIG.shakeAmp + 2);
+    drawSkyStatic();
+    ctx = saved;
+    skyCache = { key, canvas: off };
+  }
+  ctx.drawImage(skyCache.canvas, 0, 0, view.w, view.horizonY + CONFIG.shakeAmp + 2);
+  drawSkyMoving(performance.now());
 }
 
 /** Grass below the horizon, oversized so a screen shake never shows an edge. */
@@ -397,16 +460,33 @@ function sceneryItems() {
   const P = CONFIG.sceneryPeriod;
   const first = Math.floor(state.scroll / P) - 1;
   const n = Math.ceil(CONFIG.sceneryDepth / P) + 2;
+  const edge = CONFIG.lanes / 2;
   const out = [];
+  // [type, cumulative weight, min offset, spread] — offsets in lane widths beyond the path edge
+  const TABLE = [
+    ["tree", 0.2, 0.7, 2.4], ["pine", 0.3, 0.8, 2.6], ["birch", 0.36, 0.7, 2.2], ["blossom", 0.42, 0.8, 2.2],
+    ["bush", 0.55, 0.45, 1.6], ["flowers", 0.65, 0.35, 2.0], ["rock", 0.73, 0.35, 2.2], ["grass", 0.84, 0.25, 2.4],
+    ["bench", 0.96, 0.35, 0.15], ["picnic", 1.0, 1.0, 1.0],
+  ];
+  const push = (type, k, side, h, off, zJitter) => {
+    const z = k * P + zJitter - state.scroll;
+    if (z <= 0.02 || z > CONFIG.sceneryDepth) return;
+    out.push({ type, x: side * (edge + off), z, side, h });
+  };
   for (let k = first; k < first + n; k++) {
     for (const side of [-1, 1]) {
       const h = hash01(k * 2 + (side > 0 ? 1 : 0));
-      const z = k * P + h * P * 0.6 - state.scroll;
-      if (z <= 0.02 || z > CONFIG.sceneryDepth) continue;
-      const type = h < 0.4 ? "tree" : h < 0.7 ? "bush" : h < 0.84 ? "bench" : "flowers";
-      const spread = type === "tree" ? 2.4 : type === "bench" ? 0.2 : 1.3;
-      const off = (type === "bench" ? 0.35 : 0.55) + hash01(k * 7.3 + side * 3.1) * spread;
-      out.push({ type, x: side * (CONFIG.lanes / 2 + off), z, side, h });
+      const row = TABLE.find((r) => h < r[1]);
+      push(row[0], k, side, h, row[2] + hash01(k * 7.3 + side * 3.1) * row[3], h * P * 0.6);
+      // back row of trees, so the park reads as full rather than a single line
+      const h2 = hash01(k * 5.1 + side * 9.7);
+      if (h2 < CONFIG.farRowChance) {
+        const kinds = ["tree", "pine", "tree", "birch", "pine", "blossom"];
+        push(kinds[Math.floor(hash01(k * 3.3 + side) * kinds.length)], k, side, h2, 3.2 + hash01(k * 1.9 + side) * 3.2, h2 * P);
+      }
+      if (k % CONFIG.lampEvery === 0 && (Math.floor(k / CONFIG.lampEvery) % 2 === 0) === (side < 0)) {
+        push("lamp", k, side, 0.5, 0.22, 0.05);
+      }
     }
   }
   return out;
@@ -486,11 +566,12 @@ function drawTree(x, z, h) {
   const p = project(x, z), u = view.laneW * p.s;
   const v = u * (0.85 + h * 0.4);
   const variant = `tree${h < 0.2 ? "A" : "B"}${Math.floor(h * 4)}`;
+  groundShadow(p.x, p.y, v * 0.7, v * 0.15);
   blitScenery(cachedScenery(variant, 2.3, 2.7, (px, py, unit) => paintTree(px, py, unit, h)), p.x, p.y, v);
 }
 
 /** Paint one tree, feet at (px, py), v css px per size unit. */
-function paintTree(px, py, v, h) {
+function paintTree(px, py, v, h, paletteOverride) {
   const C = CONFIG.colors;
   const p = { x: px, y: py }, u = v;
   // trunk: tapered, with a shadow side and a fork
@@ -514,7 +595,7 @@ function paintTree(px, py, v, h) {
   ctx.closePath();
   ctx.fill();
   const blobs = [[0, -1.8, 0.58], [-0.48, -1.42, 0.44], [0.48, -1.42, 0.44], [-0.3, -2.15, 0.4], [0.32, -2.12, 0.42], [0, -1.32, 0.42]];
-  const palette = h < 0.2
+  const palette = paletteOverride ? paletteOverride : h < 0.2
     ? { base: C.treeA, shade: C.treeShade, light: C.treeLight, line: C.treeLine }
     : { base: C.treeB, shade: C.treeShade, light: C.treeLight, line: C.treeLine };
   drawFoliage(blobPath(p.x, p.y, v, blobs), p.x, p.y - 1.75 * v, v, palette, Math.round(h * 1000));
@@ -548,6 +629,14 @@ function drawPathDetails() {
     const z = k * P - state.scroll;
     if (z <= 0.02) continue;
     const h = hash01(k * 3.7);
+    if (k % 2 === 0) for (const side of [-1, 1]) { // edging stones on the path's border
+      const ps = project(side * (edge - 0.02), z), us = view.laneW * ps.s;
+      const rx = us * (0.07 + h * 0.03), ry = us * 0.035;
+      ctx.fillStyle = C.stoneLine;
+      ctx.beginPath(); ctx.ellipse(ps.x, ps.y - us * 0.012, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = C.stone;
+      ctx.beginPath(); ctx.ellipse(ps.x, ps.y - us * 0.022, rx * 0.92, ry * 0.85, 0, 0, Math.PI * 2); ctx.fill();
+    }
     for (const side of [-1, 1]) {
       const p = project(side * (edge + 0.05 + h * 0.15), z), u = view.laneW * p.s;
       ctx.strokeStyle = C.tuft;
@@ -563,6 +652,200 @@ function drawPathDetails() {
       ctx.beginPath(); ctx.ellipse(p.x, p.y, u * 0.045, u * 0.022, 0, 0, Math.PI * 2); ctx.fill();
     }
   }
+}
+
+/** Soft ground shadow under a prop. */
+function groundShadow(x, y, rx, ry, a = 0.18) {
+  ctx.fillStyle = `rgba(50, 60, 20, ${a})`;
+  ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); ctx.fill();
+}
+
+function drawPine(x, z, h) {
+  const p = project(x, z), u = view.laneW * p.s * (0.9 + h * 0.45);
+  groundShadow(p.x, p.y, u * 0.55, u * 0.12);
+  blitScenery(cachedScenery(`pine${Math.floor(h * 3)}`, 1.6, 3.2, (px, py, v) => paintPine(px, py, v, h)), p.x, p.y, u);
+}
+
+/** Conifer: three stacked tiers with a shadow side, on a short trunk. */
+function paintPine(px, py, v, h) {
+  const C = CONFIG.colors;
+  ctx.fillStyle = C.trunk;
+  ctx.strokeStyle = C.trunkLine;
+  ctx.lineWidth = v * 0.025;
+  ctx.fillRect(px - v * 0.07, py - v * 0.5, v * 0.14, v * 0.5);
+  ctx.strokeRect(px - v * 0.07, py - v * 0.5, v * 0.14, v * 0.5);
+  const tiers = [[0.42, 1.25, 0.62], [0.95, 1.9, 0.5], [1.5, 2.55, 0.36]]; // base y, tip y, half width
+  for (const [by, ty, hw] of tiers) {
+    const tier = new Path2D();
+    tier.moveTo(px - hw * v, py - by * v);
+    tier.quadraticCurveTo(px - hw * v * 0.35, py - (by + 0.25) * v, px, py - (ty + 0.05) * v);
+    tier.quadraticCurveTo(px + hw * v * 0.35, py - (by + 0.25) * v, px + hw * v, py - by * v);
+    tier.quadraticCurveTo(px, py - (by - 0.12) * v, px - hw * v, py - by * v);
+    ctx.strokeStyle = C.treeOutline;
+    ctx.lineWidth = v * 0.05;
+    ctx.lineJoin = "round";
+    ctx.stroke(tier);
+    ctx.fillStyle = C.pine;
+    ctx.fill(tier);
+    ctx.save();
+    ctx.clip(tier);
+    ctx.fillStyle = C.pineShade;
+    ctx.fillRect(px + v * 0.02, py - (ty + 0.2) * v, hw * v, (ty - by + 0.4) * v);
+    ctx.fillStyle = C.pineLight;
+    ctx.beginPath(); ctx.ellipse(px - hw * v * 0.4, py - (by + 0.2) * v, hw * v * 0.25, v * 0.08, -0.4, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawBirch(x, z, h) {
+  const p = project(x, z), u = view.laneW * p.s * (0.85 + h * 0.4);
+  groundShadow(p.x, p.y, u * 0.45, u * 0.1);
+  blitScenery(cachedScenery(`birch${Math.floor(h * 3)}`, 1.8, 2.8, (px, py, v) => paintBirch(px, py, v, h)), p.x, p.y, u);
+}
+
+/** Birch: slim white trunk with dark marks, light airy foliage. */
+function paintBirch(px, py, v, h) {
+  const C = CONFIG.colors;
+  ctx.fillStyle = C.birchBark;
+  ctx.strokeStyle = C.trunkLine;
+  ctx.lineWidth = v * 0.022;
+  ctx.beginPath();
+  ctx.moveTo(px - v * 0.07, py);
+  ctx.lineTo(px - v * 0.045, py - v * 1.5);
+  ctx.lineTo(px + v * 0.045, py - v * 1.5);
+  ctx.lineTo(px + v * 0.07, py);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = C.birchMark;
+  for (let i = 0; i < 5; i++) {
+    const my = py - v * (0.18 + i * 0.26), side = i % 2 ? 1 : -1;
+    ctx.fillRect(px + side * v * 0.01 - (side < 0 ? v * 0.05 : 0), my, v * 0.05, v * 0.025);
+  }
+  const blobs = [[0, -1.9, 0.45], [-0.36, -1.6, 0.34], [0.36, -1.62, 0.36], [0.05, -2.25, 0.32]];
+  drawFoliage(blobPath(px, py, v, blobs), px, py - 1.85 * v, v * 0.8, { base: C.birchLeaf, shade: C.birchShade, light: "#c4ea8e", line: C.treeLine }, Math.round(h * 777));
+}
+
+function drawBlossom(x, z, h) {
+  const p = project(x, z), u = view.laneW * p.s * (0.85 + h * 0.35);
+  groundShadow(p.x, p.y, u * 0.6, u * 0.13);
+  blitScenery(cachedScenery(`blossom${Math.floor(h * 3)}`, 2.3, 2.7, (px, py, v) => paintBlossom(px, py, v, h)), p.x, p.y, u);
+}
+
+/** Cherry blossom: the round tree shape in pink, dotted with white flowers. */
+function paintBlossom(px, py, v, h) {
+  const C = CONFIG.colors;
+  paintTree(px, py, v, h, { base: C.blossom, shade: C.blossomShade, light: C.blossomLight, line: "rgba(150, 60, 95, 0.45)" });
+  ctx.fillStyle = "#ffffff";
+  for (let i = 0; i < 14; i++) {
+    const fx = (hash01(h * 91 + i) - 0.5) * 1.6, fy = -1.25 - hash01(h * 53 + i) * 1.05;
+    ctx.beginPath(); ctx.arc(px + fx * v, py + fy * v, v * 0.035, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+function drawRock(x, z, h) {
+  const p = project(x, z), u = view.laneW * p.s * (0.5 + h * 0.6);
+  groundShadow(p.x, p.y, u * 0.38, u * 0.08);
+  blitScenery(cachedScenery(`rock${Math.floor(h * 3)}`, 1, 0.7, (px, py, v) => paintRock(px, py, v, h)), p.x, p.y, u);
+}
+
+/** A rounded boulder with a lit top-left and shaded base. */
+function paintRock(px, py, v, h) {
+  const C = CONFIG.colors;
+  const r = new Path2D();
+  r.moveTo(px - v * 0.4, py);
+  r.quadraticCurveTo(px - v * 0.45, py - v * (0.35 + h * 0.1), px - v * 0.1, py - v * 0.45);
+  r.quadraticCurveTo(px + v * 0.25, py - v * 0.5, px + v * 0.38, py - v * 0.18);
+  r.quadraticCurveTo(px + v * 0.44, py, px + v * 0.3, py);
+  r.closePath();
+  ctx.strokeStyle = C.stoneLine;
+  ctx.lineWidth = v * 0.05;
+  ctx.lineJoin = "round";
+  ctx.stroke(r);
+  ctx.fillStyle = C.rock;
+  ctx.fill(r);
+  ctx.save();
+  ctx.clip(r);
+  ctx.fillStyle = C.rockShade;
+  ctx.beginPath(); ctx.ellipse(px + v * 0.18, py, v * 0.4, v * 0.18, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = C.rockLight;
+  ctx.beginPath(); ctx.ellipse(px - v * 0.15, py - v * 0.33, v * 0.14, v * 0.06, -0.3, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
+function drawGrassClump(x, z, h) {
+  const p = project(x, z), u = view.laneW * p.s * (0.7 + h * 0.5);
+  blitScenery(cachedScenery(`grass${Math.floor(h * 3)}`, 0.8, 0.6, (px, py, v) => paintGrassClump(px, py, v, h)), p.x, p.y, u);
+}
+
+/** A clump of tall grass blades. */
+function paintGrassClump(px, py, v, h) {
+  const C = CONFIG.colors;
+  ctx.lineCap = "round";
+  for (let i = 0; i < 9; i++) {
+    const t = i / 8 - 0.5, len = 0.32 + hash01(h * 40 + i) * 0.2;
+    ctx.strokeStyle = i % 3 ? C.grassClump : C.treeShade;
+    ctx.lineWidth = v * 0.045;
+    ctx.beginPath();
+    ctx.moveTo(px + t * v * 0.35, py);
+    ctx.quadraticCurveTo(px + t * v * 0.5, py - len * v * 0.6, px + t * v * 0.85, py - len * v);
+    ctx.stroke();
+  }
+}
+
+function drawLamp(x, z) {
+  const p = project(x, z), u = view.laneW * p.s;
+  groundShadow(p.x, p.y, u * 0.2, u * 0.05);
+  blitScenery(cachedScenery("lamp", 0.6, 2.4, (px, py, v) => paintLamp(px, py, v)), p.x, p.y, u);
+}
+
+/** Park lamp: iron post, curled bracket, glowing lantern. */
+function paintLamp(px, py, v) {
+  const C = CONFIG.colors;
+  ctx.fillStyle = C.lampPole;
+  ctx.fillRect(px - v * 0.06, py - v * 0.12, v * 0.12, v * 0.12);
+  ctx.fillRect(px - v * 0.03, py - v * 1.95, v * 0.06, v * 1.85);
+  const glow = ctx.createRadialGradient(px, py - v * 2.08, v * 0.02, px, py - v * 2.08, v * 0.28);
+  glow.addColorStop(0, "rgba(255, 236, 170, 0.55)");
+  glow.addColorStop(1, "rgba(255, 236, 170, 0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath(); ctx.arc(px, py - v * 2.08, v * 0.28, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = C.lampGlass;
+  ctx.strokeStyle = C.lampPole;
+  ctx.lineWidth = v * 0.03;
+  ctx.beginPath();
+  ctx.moveTo(px - v * 0.1, py - v * 1.95);
+  ctx.lineTo(px - v * 0.13, py - v * 2.2);
+  ctx.lineTo(px + v * 0.13, py - v * 2.2);
+  ctx.lineTo(px + v * 0.1, py - v * 1.95);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  ctx.fillStyle = C.lampPole;
+  ctx.beginPath();
+  ctx.moveTo(px - v * 0.17, py - v * 2.2);
+  ctx.lineTo(px, py - v * 2.32);
+  ctx.lineTo(px + v * 0.17, py - v * 2.2);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/** Picnic blanket lying on the grass in perspective, with a basket. */
+function drawPicnic(x, z, h) {
+  const C = CONFIG.colors;
+  const w = 0.75, d = 0.5, cells = 4;
+  for (let i = 0; i < cells; i++) {
+    for (let j = 0; j < cells; j++) {
+      const x0 = x - w / 2 + (w * i) / cells, z0 = z - d / 2 + (d * j) / cells;
+      const a = project(x0, z0), b = project(x0 + w / cells, z0), c = project(x0 + w / cells, z0 + d / cells), e = project(x0, z0 + d / cells);
+      fillQuad([a.x, a.y], [b.x, b.y], [c.x, c.y], [e.x, e.y], (i + j) % 2 ? C.blanketA : C.blanketB);
+    }
+  }
+  const p = project(x + (h > 0.96 ? 0.12 : -0.1), z), u = view.laneW * p.s;
+  ctx.fillStyle = C.basket;
+  ctx.strokeStyle = C.trunkLine;
+  ctx.lineWidth = Math.max(0.8, u * 0.015);
+  roundRectPath(p.x - u * 0.09, p.y - u * 0.11, u * 0.18, u * 0.11, u * 0.02);
+  ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.arc(p.x, p.y - u * 0.11, u * 0.07, Math.PI, 0); ctx.stroke();
 }
 
 function drawBench(x, z, side) {
@@ -592,14 +875,21 @@ function drawFlowers(x, z, h) {
 }
 
 const SCENERY_DRAW = {
+  pine: (it) => drawPine(it.x, it.z, it.h),
+  birch: (it) => drawBirch(it.x, it.z, it.h),
+  blossom: (it) => drawBlossom(it.x, it.z, it.h),
+  rock: (it) => drawRock(it.x, it.z, it.h),
+  grass: (it) => drawGrassClump(it.x, it.z, it.h),
+  lamp: (it) => drawLamp(it.x, it.z),
+  picnic: (it) => drawPicnic(it.x, it.z, it.h),
   tree: (it) => drawTree(it.x, it.z, it.h),
   bush: (it) => drawBush(it.x, it.z, it.h),
   bench: (it) => drawBench(it.x, it.z, it.side),
   flowers: (it) => drawFlowers(it.x, it.z, it.h),
 };
 
-/** Sun, drifting clouds and a distant tree line along the horizon. */
-function drawSkyDetails(now) {
+/** Sun, hills and the distant tree line (cached by drawBackdrop). */
+function drawSkyStatic() {
   const C = CONFIG.colors;
   const sx = view.w * 0.84, sy = view.horizonY * 0.7, sr = Math.min(view.w, view.h) * 0.07;
   const glow = ctx.createRadialGradient(sx, sy, sr * 0.6, sx, sy, sr * 2.6);
@@ -609,6 +899,12 @@ function drawSkyDetails(now) {
   ctx.fillRect(sx - sr * 3, sy - sr * 3, sr * 6, sr * 6);
   ctx.fillStyle = C.sun;
   ctx.beginPath(); ctx.arc(sx, sy, sr, 0, Math.PI * 2); ctx.fill();
+  drawHillsAndTreeLine();
+}
+
+/** Drifting clouds and gliding birds. */
+function drawSkyMoving(now) {
+  const C = CONFIG.colors;
   const cu = Math.min(view.w, view.h) * 0.05;
   for (let i = 0; i < 3; i++) {
     const span = view.w + cu * 8;
@@ -617,6 +913,24 @@ function drawSkyDetails(now) {
     ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
     ctx.beginPath();
     for (const [bx, by, r] of [[-1.3, 0.2, 0.9], [0, -0.2, 1.25], [1.3, 0.2, 0.9], [0.4, 0.35, 0.8]]) { ctx.moveTo(cx + (bx + r) * cu, cy + by * cu); ctx.arc(cx + bx * cu, cy + by * cu, r * cu, 0, Math.PI * 2); }
+    ctx.fill();
+  }
+  drawBirds(now);
+}
+
+function drawHillsAndTreeLine() {
+  const C = CONFIG.colors;
+  // rolling hills, far then near
+  for (const [color, amp, f, ph] of [[C.hillFar, 0.05, 0.0045, 1.3], [C.hillNear, 0.032, 0.0075, 4.1]]) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(0, view.horizonY + 2);
+    for (let x = 0; x <= view.w + 8; x += 8) {
+      const y = view.horizonY - view.h * amp * (0.55 + 0.3 * Math.sin(x * f + ph) + 0.15 * Math.sin(x * f * 2.7 + ph * 2));
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(view.w + 8, view.horizonY + 2);
+    ctx.closePath();
     ctx.fill();
   }
   ctx.fillStyle = C.farTrees;
@@ -628,6 +942,27 @@ function drawSkyDetails(now) {
     ctx.arc(x, view.horizonY, r, Math.PI, 0);
   }
   ctx.fill();
+}
+
+/** Three birds gliding across the sky. */
+function drawBirds(now) {
+  const C = CONFIG.colors;
+  // birds gliding across, wings flapping
+  ctx.strokeStyle = C.bird;
+  ctx.lineCap = "round";
+  ctx.lineWidth = 1.6;
+  for (let i = 0; i < 3; i++) {
+    const span = view.w + 120;
+    const bx = ((hash01(i + 31) * span + now * 0.022 * (1 + i * 0.25)) % span) - 60;
+    const by = view.horizonY * (0.22 + 0.16 * i) + Math.sin(now * 0.0011 + i * 2) * 10;
+    const wing = Math.sin(now * 0.012 + i * 2.1) * 4;
+    const sz = 6 + i * 1.5;
+    ctx.beginPath();
+    ctx.moveTo(bx - sz, by - wing);
+    ctx.quadraticCurveTo(bx - sz * 0.4, by - wing * 0.2 - 2, bx, by);
+    ctx.quadraticCurveTo(bx + sz * 0.4, by - wing * 0.2 - 2, bx + sz, by - wing);
+    ctx.stroke();
+  }
 }
 
 /** Alternating grass stripes that scroll toward the camera. */
@@ -654,6 +989,10 @@ function drawRoad() {
   const z0 = 0, z1 = CONFIG.viewDepth;
   groundQuad(-half - 0.09, half + 0.09, z0, z1, C.roadEdge);
   groundQuad(-half, half, z0, z1, C.road);
+  for (let lane = 0; lane < CONFIG.lanes; lane++) { // lighter worn track down each lane
+    const x = laneToX(lane);
+    groundQuad(x - 0.24, x + 0.24, z0, z1, C.roadWear);
+  }
 
   const P = CONFIG.dashPeriod;
   const offset = state.scroll % P;
@@ -858,100 +1197,212 @@ function roundRectPath(x, y, w, h, r) {
   ctx.roundRect(x, y, w, h, Math.min(r, w / 2, h / 2));
 }
 
-/** Tall crate centred on depth z: front face plus a top face receding toward the horizon. */
+/** Screen corners of an upright box face at depth z: [bottom-left, bottom-right, top-right, top-left]. */
+function boxFace(lx, w, h, z) {
+  const p = project(lx, z), u = view.laneW * p.s;
+  return { x0: p.x - (w / 2) * u, x1: p.x + (w / 2) * u, y0: p.y, y1: p.y - h * u, u };
+}
+
+/**
+ * Wooden crate centred on depth z. The side facing the camera axis shows when the
+ * crate is in an outer lane; the top recedes toward the horizon.
+ */
 function drawCrate(lane, z) {
   const C = CONFIG.colors, T = CONFIG.obstacleTypes.crate;
-  const p = project(laneToX(lane), Math.max(0, z - T.d / 2)), f = project(laneToX(lane), z + T.d / 2);
-  const u = view.laneW * p.s, uf = view.laneW * f.s;
-  const w = T.w * u, h = T.h * u, wf = T.w * uf, hf = T.h * uf;
-  ctx.lineWidth = Math.max(1, u * 0.02);
+  const lx = laneToX(lane);
+  const nf = boxFace(lx, T.w, T.h, Math.max(0.001, z - T.d / 2)), ff = boxFace(lx, T.w, T.h, z + T.d / 2);
+  const u = nf.u, lw = Math.max(1, u * 0.02);
+  groundShadow((nf.x0 + nf.x1) / 2 + (lx < 0 ? u * 0.08 : lx > 0 ? -u * 0.08 : 0), nf.y0, (nf.x1 - nf.x0) * 0.62, u * 0.07, 0.22);
   ctx.lineJoin = "round";
+  ctx.lineWidth = lw;
   ctx.strokeStyle = C.obstacleOutline;
-  // top face
-  fillQuad([p.x - w / 2, p.y - h], [p.x + w / 2, p.y - h], [f.x + wf / 2, f.y - hf], [f.x - wf / 2, f.y - hf], C.crateTop);
+  // visible side face
+  if (lx + T.w / 2 < 0) { fillQuad([nf.x1, nf.y0], [ff.x1, ff.y0], [ff.x1, ff.y1], [nf.x1, nf.y1], C.crateSide); ctx.stroke(); }
+  if (lx - T.w / 2 > 0) { fillQuad([nf.x0, nf.y0], [ff.x0, ff.y0], [ff.x0, ff.y1], [nf.x0, nf.y1], C.crateSide); ctx.stroke(); }
+  // top
+  fillQuad([nf.x0, nf.y1], [nf.x1, nf.y1], [ff.x1, ff.y1], [ff.x0, ff.y1], C.crateTop);
   ctx.stroke();
-  // front face
-  roundRectPath(p.x - w / 2, p.y - h, w, h, u * 0.05);
-  ctx.fillStyle = C.crate;
-  ctx.fill();
-  ctx.stroke();
-  // planks + brace
   ctx.strokeStyle = C.crateDark;
-  ctx.lineWidth = Math.max(1, u * 0.025);
-  const inset = w * 0.1;
-  ctx.strokeRect(p.x - w / 2 + inset, p.y - h + inset, w - inset * 2, h - inset * 2);
-  ctx.beginPath();
-  ctx.moveTo(p.x - w / 2 + inset, p.y - inset);
-  ctx.lineTo(p.x + w / 2 - inset, p.y - h + inset);
+  ctx.lineWidth = Math.max(0.7, u * 0.012);
+  for (const t of [0.33, 0.66]) {
+    ctx.beginPath();
+    ctx.moveTo(nf.x0 + (nf.x1 - nf.x0) * t, nf.y1);
+    ctx.lineTo(ff.x0 + (ff.x1 - ff.x0) * t, ff.y1);
+    ctx.stroke();
+  }
+  // front: frame boards around a planked panel, diagonal brace, nails
+  const fw = nf.x1 - nf.x0, fh = nf.y0 - nf.y1, b = fw * 0.13;
+  ctx.fillStyle = C.crateFrame;
+  roundRectPath(nf.x0, nf.y1, fw, fh, u * 0.03);
+  ctx.fill();
+  ctx.fillStyle = C.crate;
+  ctx.fillRect(nf.x0 + b, nf.y1 + b, fw - 2 * b, fh - 2 * b);
+  ctx.strokeStyle = C.crateDark;
+  ctx.lineWidth = Math.max(0.7, u * 0.012);
+  for (let i = 1; i < 4; i++) {
+    const y = nf.y1 + b + ((fh - 2 * b) * i) / 4;
+    ctx.beginPath(); ctx.moveTo(nf.x0 + b, y); ctx.lineTo(nf.x1 - b, y); ctx.stroke();
+  }
+  ctx.fillStyle = C.crateFrame;
+  ctx.save();
+  ctx.translate(nf.x0 + fw / 2, nf.y1 + fh / 2);
+  ctx.rotate(-Math.atan2(fh - 2 * b, fw - 2 * b));
+  ctx.fillRect(-Math.hypot(fw, fh) / 2 + b, -b * 0.45, Math.hypot(fw, fh) - 2 * b, b * 0.9);
+  ctx.restore();
+  ctx.fillStyle = C.nail;
+  for (const [nx, ny] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+    ctx.beginPath(); ctx.arc(nf.x0 + b / 2 + nx * (fw - b), nf.y1 + b / 2 + ny * (fh - b), Math.max(0.8, u * 0.018), 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.strokeStyle = C.obstacleOutline;
+  ctx.lineWidth = lw;
+  roundRectPath(nf.x0, nf.y1, fw, fh, u * 0.03);
   ctx.stroke();
 }
 
-/** Low log lying across the lane. */
+/** Round hay bale lying end-on: tall, so it has to be dodged. */
+function drawHay(lane, z) {
+  const C = CONFIG.colors, T = CONFIG.obstacleTypes.hay;
+  const lx = laneToX(lane);
+  const n = project(lx, Math.max(0.001, z - T.d / 2)), f = project(lx, z + T.d / 2);
+  const un = view.laneW * n.s, uf = view.laneW * f.s;
+  const rn = (T.h / 2) * un, rf = (T.h / 2) * uf;
+  groundShadow(n.x, n.y, rn * 1.15, un * 0.07, 0.22);
+  ctx.lineWidth = Math.max(1, un * 0.02);
+  ctx.strokeStyle = C.hayLine;
+  // body between the back and front discs
+  ctx.fillStyle = C.hayDark;
+  ctx.beginPath();
+  ctx.moveTo(n.x - rn, n.y - rn);
+  ctx.lineTo(f.x - rf, f.y - rf);
+  ctx.arc(f.x, f.y - rf, rf, Math.PI, 0);
+  ctx.lineTo(n.x + rn, n.y - rn);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // front disc with a spiral of straw
+  ctx.fillStyle = C.hay;
+  ctx.beginPath(); ctx.arc(n.x, n.y - rn, rn, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.lineWidth = Math.max(0.7, un * 0.013);
+  ctx.beginPath();
+  for (let a = 0; a < Math.PI * 7; a += 0.2) {
+    const r = rn * (a / (Math.PI * 7)) * 0.9;
+    const px = n.x + Math.cos(a) * r, py = n.y - rn + Math.sin(a) * r;
+    if (a === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.stroke();
+  // twine band
+  ctx.strokeStyle = C.hurdleRed;
+  ctx.lineWidth = Math.max(1, un * 0.025);
+  ctx.beginPath(); ctx.moveTo(n.x - rn * 0.98, n.y - rn * 1.2); ctx.lineTo(f.x - rf * 0.98, f.y - rf * 1.2); ctx.stroke();
+}
+
+/** Low log lying across the lane: bark, moss, and a ringed end facing the camera axis. */
 function drawLog(lane, z) {
   const C = CONFIG.colors, T = CONFIG.obstacleTypes.log;
-  const p = project(laneToX(lane), z);
+  const lx = laneToX(lane);
+  const p = project(lx, z);
   const u = view.laneW * p.s;
   const w = T.w * u, h = T.h * u;
+  groundShadow(p.x, p.y, w * 0.55, u * 0.05, 0.22);
   ctx.lineWidth = Math.max(1, u * 0.02);
   ctx.strokeStyle = C.obstacleOutline;
   roundRectPath(p.x - w / 2, p.y - h, w, h, h / 2);
   ctx.fillStyle = C.log;
   ctx.fill();
-  ctx.stroke();
-  // bark lines
+  ctx.save();
+  ctx.clip();
+  ctx.fillStyle = C.logTop; // light along the top
+  ctx.fillRect(p.x - w / 2, p.y - h, w, h * 0.35);
   ctx.strokeStyle = C.logRing;
-  ctx.beginPath();
-  ctx.moveTo(p.x - w * 0.3, p.y - h * 0.62);
-  ctx.lineTo(p.x + w * 0.1, p.y - h * 0.62);
-  ctx.moveTo(p.x - w * 0.1, p.y - h * 0.34);
-  ctx.lineTo(p.x + w * 0.25, p.y - h * 0.34);
-  ctx.stroke();
-  // cut end
+  ctx.lineWidth = Math.max(0.7, u * 0.013);
+  for (let i = 0; i < 6; i++) {
+    const bx = p.x - w * 0.42 + i * w * 0.16, by = p.y - h * (0.3 + (i % 3) * 0.18);
+    ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + w * 0.09, by + h * 0.04); ctx.stroke();
+  }
+  ctx.fillStyle = C.moss;
+  ctx.beginPath(); ctx.ellipse(p.x - w * 0.12, p.y - h * 0.95, w * 0.14, h * 0.18, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
   ctx.strokeStyle = C.obstacleOutline;
+  ctx.lineWidth = Math.max(1, u * 0.02);
+  roundRectPath(p.x - w / 2, p.y - h, w, h, h / 2);
+  ctx.stroke();
+  // cut end on the side facing the camera axis
+  const endX = lx > 0 ? p.x - w / 2 + h * 0.45 : p.x + w / 2 - h * 0.45;
   ctx.fillStyle = C.logEnd;
-  ctx.beginPath();
-  ctx.ellipse(p.x + w / 2 - h * 0.45, p.y - h / 2, h * 0.36, h * 0.47, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(endX, p.y - h / 2, h * 0.36, h * 0.47, 0, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   ctx.strokeStyle = C.logRing;
-  ctx.beginPath();
-  ctx.ellipse(p.x + w / 2 - h * 0.45, p.y - h / 2, h * 0.17, h * 0.23, 0, 0, Math.PI * 2);
-  ctx.stroke();
+  for (const r of [0.28, 0.14]) { ctx.beginPath(); ctx.ellipse(endX, p.y - h / 2, h * r, h * r * 1.3, 0, 0, Math.PI * 2); ctx.stroke(); }
 }
 
-/** Traffic cone. */
+/** Traffic cone: lit left half, shaded right half, reflective bands, weighted base. */
 function drawCone(lane, z) {
   const C = CONFIG.colors, T = CONFIG.obstacleTypes.cone;
   const p = project(laneToX(lane), z);
   const u = view.laneW * p.s;
   const w = T.w * u, h = T.h * u;
+  groundShadow(p.x, p.y, w * 0.75, u * 0.04, 0.22);
   ctx.lineWidth = Math.max(1, u * 0.02);
   ctx.lineJoin = "round";
   ctx.strokeStyle = C.obstacleOutline;
   roundRectPath(p.x - w * 0.62, p.y - h * 0.12, w * 1.24, h * 0.14, h * 0.05);
   ctx.fillStyle = C.coneBase;
-  ctx.fill();
-  ctx.stroke();
+  ctx.fill(); ctx.stroke();
+  const body = new Path2D();
+  body.moveTo(p.x - w / 2, p.y - h * 0.1);
+  body.lineTo(p.x - w * 0.08, p.y - h);
+  body.quadraticCurveTo(p.x, p.y - h * 1.04, p.x + w * 0.08, p.y - h);
+  body.lineTo(p.x + w / 2, p.y - h * 0.1);
+  body.closePath();
   ctx.fillStyle = C.cone;
-  ctx.beginPath();
-  ctx.moveTo(p.x - w / 2, p.y - h * 0.1);
-  ctx.lineTo(p.x - w * 0.08, p.y - h);
-  ctx.lineTo(p.x + w * 0.08, p.y - h);
-  ctx.lineTo(p.x + w / 2, p.y - h * 0.1);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
+  ctx.fill(body);
+  ctx.save();
+  ctx.clip(body);
+  ctx.fillStyle = C.coneDark;
+  ctx.fillRect(p.x + w * 0.05, p.y - h * 1.1, w, h * 1.1);
+  ctx.fillStyle = C.coneLight;
+  ctx.fillRect(p.x - w * 0.3, p.y - h * 1.1, w * 0.12, h * 1.1);
   ctx.fillStyle = C.coneStripe;
-  ctx.beginPath();
-  ctx.moveTo(p.x - w * 0.33, p.y - h * 0.4);
-  ctx.lineTo(p.x - w * 0.22, p.y - h * 0.66);
-  ctx.lineTo(p.x + w * 0.22, p.y - h * 0.66);
-  ctx.lineTo(p.x + w * 0.33, p.y - h * 0.4);
-  ctx.closePath();
-  ctx.fill();
+  ctx.fillRect(p.x - w, p.y - h * 0.62, w * 2, h * 0.16);
+  ctx.fillRect(p.x - w, p.y - h * 0.36, w * 2, h * 0.12);
+  ctx.restore();
+  ctx.stroke(body);
 }
 
-const OBSTACLE_DRAW = { crate: drawCrate, log: drawLog, cone: drawCone };
+/** Low hurdle: two posts and a red-and-white striped bar. */
+function drawHurdle(lane, z) {
+  const C = CONFIG.colors, T = CONFIG.obstacleTypes.hurdle;
+  const p = project(laneToX(lane), z);
+  const u = view.laneW * p.s;
+  const w = T.w * u, h = T.h * u, bar = h * 0.26;
+  groundShadow(p.x, p.y, w * 0.55, u * 0.035, 0.2);
+  ctx.lineWidth = Math.max(1, u * 0.018);
+  ctx.strokeStyle = C.obstacleOutline;
+  for (const sx of [-1, 1]) { // posts and feet
+    ctx.fillStyle = C.hurdlePost;
+    ctx.fillRect(p.x + sx * w * 0.42 - u * 0.025, p.y - h, u * 0.05, h);
+    ctx.strokeRect(p.x + sx * w * 0.42 - u * 0.025, p.y - h, u * 0.05, h);
+    ctx.fillRect(p.x + sx * w * 0.42 - u * 0.07, p.y - u * 0.025, u * 0.14, u * 0.025);
+  }
+  roundRectPath(p.x - w / 2, p.y - h, w, bar, bar * 0.3);
+  ctx.fillStyle = C.hurdleWhite;
+  ctx.fill();
+  ctx.save();
+  ctx.clip();
+  ctx.fillStyle = C.hurdleRed;
+  for (let i = -1; i < 7; i += 2) {
+    ctx.beginPath();
+    ctx.moveTo(p.x - w / 2 + (i * w) / 6, p.y - h + bar);
+    ctx.lineTo(p.x - w / 2 + ((i + 1) * w) / 6, p.y - h);
+    ctx.lineTo(p.x - w / 2 + ((i + 2) * w) / 6, p.y - h);
+    ctx.lineTo(p.x - w / 2 + ((i + 1) * w) / 6, p.y - h + bar);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+  roundRectPath(p.x - w / 2, p.y - h, w, bar, bar * 0.3);
+  ctx.stroke();
+}
+
+const OBSTACLE_DRAW = { crate: drawCrate, log: drawLog, cone: drawCone, hay: drawHay, hurdle: drawHurdle };
 
 /** A treat: the banana penguin from assets/art/reference/banana_penguin.jpg, hovering and wobbling. */
 function drawTreat(lane, z, seed) {
@@ -987,6 +1438,12 @@ function render() {
   drawGrassBands();
   drawRoad();
   drawPathDetails();
+  // haze toward the horizon over the ground and path
+  const hz = ctx.createLinearGradient(0, view.horizonY, 0, view.horizonY + view.h * 0.12);
+  hz.addColorStop(0, CONFIG.colors.haze);
+  hz.addColorStop(1, "rgba(214, 238, 200, 0)");
+  ctx.fillStyle = hz;
+  ctx.fillRect(-20, view.horizonY, view.w + 40, view.h * 0.12);
   const items = [];
   for (const o of state.obstacles) {
     const z = o.wz - state.scroll;
@@ -1000,7 +1457,10 @@ function render() {
     const alpha = Math.max(0, Math.min(1, (CONFIG.spawnAhead - z) / CONFIG.fadeInDepth));
     items.push({ z, draw: () => { ctx.globalAlpha = alpha; drawTreat(t.lane, z, t.wz); ctx.globalAlpha = 1; } });
   }
-  for (const it of sceneryItems()) items.push({ z: it.z, draw: () => SCENERY_DRAW[it.type](it) });
+  for (const it of sceneryItems()) {
+    const haze = Math.max(0, Math.min(1, (it.z - CONFIG.hazeFrom) / (CONFIG.sceneryDepth - CONFIG.hazeFrom))) * CONFIG.hazeMax;
+    items.push({ z: it.z, draw: () => { ctx.globalAlpha = 1 - haze; SCENERY_DRAW[it.type](it); ctx.globalAlpha = 1; } });
+  }
   items.push({ z: CONFIG.dogZ, draw: drawPlayer });
   items.sort((a, b) => b.z - a.z);
   for (const it of items) it.draw();
@@ -1258,7 +1718,8 @@ function generateRow(prevPassable, d, rng) {
     const order = allLanes();
     for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
     const row = allLanes().map(() => null);
-    for (let i = 0; i < count; i++) row[order[i]] = rng() < CONFIG.crateShare ? "crate" : (rng() < 0.5 ? "log" : "cone");
+    const pick = (list) => list[Math.floor(rng() * list.length)];
+    for (let i = 0; i < count; i++) row[order[i]] = rng() < CONFIG.crateShare ? pick(CONFIG.tallTypes) : pick(CONFIG.lowTypes);
     if (isRowFair(prevPassable, row)) return row;
   }
   return allLanes().map(() => null); // an empty row is always fair

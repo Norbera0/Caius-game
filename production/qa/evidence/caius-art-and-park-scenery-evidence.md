@@ -81,3 +81,18 @@ Known limits: the rear running pose's own leg positions set the stride's look, s
 leg motion is a few pixels of lift and swing rather than a full redraw; at a
 strong jump tuck a faint straight edge can show where the body was cut above the
 right hind leg. Sign-off: Claude under the user's autonomous instruction.
+
+## Revision 2026-10-09 — environment pass
+
+User request: improve the barriers, trees and field; populate the park.
+
+- Obstacles: crate with frame boards, planks, brace, nails and a visible side face
+  in outer lanes; log with bark, moss, lit top and a ringed end; cone with two-tone
+  shading and reflective bands; new **hay bale** (tall, dodge it) and **hurdle**
+  (low, jump it); all cast ground shadows. See `09-obstacle-lineup.png`.
+- Park: round, pine, birch and cherry-blossom trees, a back row of trees, bushes,
+  rocks, grass clumps, flower patches, benches, picnic blankets with baskets, lamp
+  posts; ground shadows; far scenery fades into haze.
+- Field and sky: worn track down each lane, stone edging on the path, rolling hills,
+  birds, a haze band at the horizon. The still sky is cached and redrawn only on resize.
+- 124/124 checks pass; 3.1 ms per frame on desktop (not measured on a phone).

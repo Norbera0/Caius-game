@@ -455,6 +455,16 @@ async function suiteArt() {
   check("60 fps held with scenery, dog art and obstacles (headless desktop CPU)", fps >= 55, `${fps} frames in 1 s`);
   const cost = await ev(`(() => { const R = window.CaiusRun; const t0 = performance.now(); for (let i = 0; i < 200; i++) R._render(); return (performance.now() - t0) / 200; })()`);
   check("one full frame renders in < 4 ms (desktop; phone budget 16.7 ms)", cost < 4, `${cost.toFixed(2)} ms/frame`);
+  // --- every obstacle type side by side (frozen scene) ----------------------------------------
+  await open("?nospawn&speed=0.0001");
+  await ev(`(() => { const s = window.CaiusRun.state, z = window.CaiusRun.CONFIG.dogZ;
+    for (const [type, lane, ahead] of [["crate", 0, 2.2], ["hay", 2, 2.2], ["log", 1, 1.4], ["cone", 0, 4], ["hurdle", 2, 4], ["crate", 1, 6]])
+      s.obstacles.push({ type, lane, wz: s.scroll + z + ahead }); })()`);
+  await sleep(300);
+  await shot("09-obstacle-lineup.png");
+  const kinds = await ev("JSON.stringify(Object.keys(window.CaiusRun.CONFIG.obstacleTypes))").then(JSON.parse);
+  check("five obstacle types: crate and hay bale block, log, cone and hurdle are jumped", ["crate", "hay", "log", "cone", "hurdle"].every((k) => kinds.includes(k)), kinds.join(", "));
+
   // --- rig: the dog moves continuously, and differently per state -------------------------
   await open("?nospawn");
   const sample = (ms) => ev(`new Promise(r => { const R = window.CaiusRun, out = []; const t0 = performance.now();

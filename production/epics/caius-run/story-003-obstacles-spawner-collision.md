@@ -89,3 +89,4 @@
 **Deviations**: Advisory — retuned story 001/002 values so obstacles are readable in time: speed now 2.5 → 4.8 z/s (was a fixed 9, which gave ~0.3 s of warning), stride decoupled from speed. Crate drawing is centred on its hitbox depth.
 **Test Evidence**: Logic: test waived at `qa.level: minimal`; `node tools/qa/cdp-check.mjs obstacles-spawner-collision` 26/26 PASS (fairness self-test over 120,000 generated rows, hit tests, live jump-over at base and max speed, live crash). Log + 3 screenshots in `production/qa/evidence/obstacles-spawner-collision/`. Also closes story 002's deferred "jump clears a low obstacle" criterion.
 **Code Review**: Skipped — solo mode
+**Revised**: 2026-10-09 — two more obstacle types: hay bale (tall, `low: false`) and hurdle (low, jumpable). The spawner now picks from `CONFIG.tallTypes` / `CONFIG.lowTypes`; the fairness self-test still passes (it checks every type's height against the jump).
