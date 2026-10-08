@@ -85,3 +85,4 @@
 **Deviations**: None. A bone line ends one slide plus reaction margin before the next row, so it never traps the player in a lane about to be blocked.
 **Test Evidence**: Logic: test waived at `qa.level: minimal`; `node tools/qa/cdp-check.mjs treats` 9/9 PASS (3-minute spawner simulation: 114 lines, 0 overlaps with obstacles, lines in all lanes; live pickup, scoring, reset on retry). Log + 3 screenshots in `production/qa/evidence/treats/`.
 **Code Review**: Skipped — solo mode
+**Revised**: 2026-10-09 — the treat is now the banana penguin from `ref_image/bananana.jpg` (user request), cut by `tools/art/build_caius_sprites.py` and inlined; pickup, spacing and scoring are unchanged. Screenshots in `production/qa/evidence/treats/` recaptured.
